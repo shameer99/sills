@@ -29,7 +29,7 @@ MUTANTS = [
     ("Z15 the visible part as big as the pane", "return CGRect(x: origin.x, y: origin.y, width: size.width / s, height: size.height / s)",
      "return CGRect(x: origin.x, y: origin.y, width: size.width, height: size.height)"),
     # The stroke.
-    ("S1 two fingers on a zoomed picture not the picture's at once", "            if owner == .undecided, zoom.isZoomed { owner = .picture }\n", ""),
+    ("S1 two fingers on a zoomed picture not the picture's at once", "            if surface == .picture, owner == .undecided, zoom.isZoomed { owner = .picture }\n", ""),
     ("S2 the pan's start always the Mac's (a pinch whose midpoint moved scrolls)",
      "                if spacing > travel {\n                    owner = .picture\n                    return\n                }\n", ""),
     ("S3 a pinch judged by its spacing alone (a drifting scroll zooms)", "guard spacing >= Self.pinchTravel, spacing > travel else { return false }",
@@ -43,7 +43,7 @@ MUTANTS = [
     ("S7 three fingers leave the zoom a pinch made", "            zoom = before\n            return true", "            return false"),
     ("S8 three fingers put back a zoom something else changed", "guard was == .picture, let before, let made, zoom == made, before != zoom else { return false }",
      "guard was == .picture, let before, before != zoom else { return false }"),
-    ("S9 a stroke never ends (the next starts with its owner)", "            let ended = owner\n            self = Stroke()\n",
+    ("S9 a stroke never ends (the next starts with its owner)", "            let ended = owner\n            self = Stroke(surface: surface)\n",
      "            let ended = owner\n"),
     ("S10 no settle at a picture stroke's end", "            let before = zoom\n            zoom.settle()\n            return zoom != before",
      "            return false"),
@@ -55,6 +55,16 @@ MUTANTS = [
      "guard owner == .undecided || owner == .picture, pair.count < 2, at.count == 2 else { return }",
      "guard pair.count < 2, at.count == 2 else { return }; if owner == .mac { owner = .picture }"),
     ("S15 one of a pair lifting and another landing: no new pair", "                if owner == .picture, at.count == 2 { formPair() }\n", ""),
+    # Trackpad pinch zoom.
+    ("T1 trackpad claims two fingers immediately while zoomed (breaks two-finger scroll)",
+     "            if surface == .picture, owner == .undecided, zoom.isZoomed { owner = .picture }",
+     "            if owner == .undecided, zoom.isZoomed { owner = .picture }"),
+    ("T2 trackpad pinch anchors on the trackpad midpoint instead of the pane middle",
+     "                let center = CGPoint(x: size.width / 2, y: size.height / 2)\n                zoom.pinch(factor: now / was, from: center, to: center, in: size)",
+     "                zoom.pinch(factor: now / was, from: Self.midpoint(last[0], last[1]), to: Self.midpoint(a, b), in: size)"),
+    ("T3 trackpad stroke forgets its surface after a lift",
+     "            self = Stroke(surface: surface)",
+     "            self = Stroke()"),
 ]
 caught = 0
 for name, old, new in MUTANTS:

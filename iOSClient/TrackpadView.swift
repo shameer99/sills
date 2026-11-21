@@ -26,6 +26,11 @@ struct Trackpad: View {
     var verticalSpan: CGFloat? = nil
     /// A three- or four-finger gesture, for the Mac (`StreamClient.sendGesture`). True when it went.
     var sendGesture: (TrackpadGestures.Gesture, Int) -> Bool = { _, _ in false }
+    /// The picture's zoom, kept by the stream screen (`StreamZoomModel`, which `ZoomedStreamView`
+    /// draws): read for every stroke, written while two fingers pinch on the pad. Nil keeps it in
+    /// the surface.
+    var readZoom: (() -> StreamZoom)? = nil
+    var writeZoom: ((StreamZoom) -> Void)? = nil
 
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 22, style: .continuous) }
 
@@ -35,7 +40,8 @@ struct Trackpad: View {
             DotGrid().allowsHitTesting(false)
             TrackpadView(send: send, setPointer: setPointer, feed: feed, onFingers: onFingers,
                          latched: latched, onModifiersConsumed: onModifiersConsumed,
-                         verticalSpan: verticalSpan, sendGesture: sendGesture)
+                         verticalSpan: verticalSpan, sendGesture: sendGesture,
+                         readZoom: readZoom, writeZoom: writeZoom)
             VStack {
                 Spacer(minLength: 0)
                 Text("Drag to move the pointer. Tap to click, two fingers to scroll.")
@@ -85,6 +91,8 @@ struct TrackpadView: UIViewRepresentable {
     let onModifiersConsumed: () -> Void
     var verticalSpan: CGFloat? = nil
     var sendGesture: (TrackpadGestures.Gesture, Int) -> Bool = { _, _ in false }
+    var readZoom: (() -> StreamZoom)? = nil
+    var writeZoom: ((StreamZoom) -> Void)? = nil
 
     func makeUIView(context: Context) -> TrackpadSurface {
         let view = TrackpadSurface(frame: .zero)
@@ -104,6 +112,8 @@ struct TrackpadView: UIViewRepresentable {
         uiView.latchedModifiers = latched
         uiView.verticalSpan = verticalSpan
         uiView.sendGesture = sendGesture
+        uiView.readZoom = readZoom
+        uiView.writeZoom = writeZoom
         // Called from a gesture callback, never from inside a SwiftUI update, so the binding write
         // it performs needs no hop to the next runloop turn.
         uiView.onModifiersConsumed = onModifiersConsumed
@@ -139,8 +149,29 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
     var sendGesture: (TrackpadGestures.Gesture, Int) -> Bool = { _, _ in false }
     /// Every direct touch, for three-finger strokes: from the moment three fingers are down, nothing
     /// of the stroke reaches the Mac but its gesture (`strokes.silent`, each finger handler's first
-    /// line).
+    /// line). Also feeds `zoomStroke` so a two-finger pinch zooms the picture.
     private let strokes = StrokeObserver()
+    /// The picture's zoom (`StreamZoom`), whoever keeps it: the stream screen's, through these
+    /// (`Trackpad`), or this view alone (the touch rig). Read for every stroke; written while two
+    /// fingers pinch on the pad.
+    var readZoom: (() -> StreamZoom)?
+    var writeZoom: ((StreamZoom) -> Void)?
+    private var ownZoom = StreamZoom()
+    var zoom: StreamZoom {
+        get { readZoom?() ?? ownZoom }
+        set { if let writeZoom { writeZoom(newValue) } else { ownZoom = newValue } }
+    }
+    /// Who a stroke on the pad belongs to, the Mac or the picture's zoom (`StreamZoom.Stroke`,
+    /// `.trackpad`), from every direct touch the stroke observer sees. Two fingers zoom the picture
+    /// only when their spacing changes more than their midpoint moves, even while zoomed, so
+    /// two-finger scrolling keeps working.
+    private var zoomStroke = StreamZoom.Stroke(surface: .trackpad)
+    /// The pan may drive the Mac (scroll or move the pointer): its stroke was the Mac's when it
+    /// began. A pan whose stroke the picture's zoom took sends nothing to the Mac, to its end.
+    private var panAllowed = false
+    /// The current or just-ended stroke zoomed the picture: outlasts the last lift until the next
+    /// stroke's first touch, so a quick pinch never fires a stray tap or two-finger right-click.
+    private var strokeZoomed = false
 
     /// The virtual cursor, in frame coordinates (0…1), starting in the middle, clamped, so pushing
     /// past an edge parks the pointer there instead of losing it (PadCursor, pure, checked in
@@ -255,10 +286,13 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
 
         // Three fingers or more: a gesture for the Mac, never a click, a drag or a scroll
         // (StrokeObserver, TrackpadGestures). It only watches, as the counter does; no stroke goes
-        // silent while the press-and-hold drag holds the button, which must still come up.
+        // silent while the press-and-hold drag holds the button, which must still come up. Two
+        // fingers whose spacing changes more than their midpoint moves zoom the picture
+        // (`StreamZoom.Stroke`, from the same touches).
         strokes.holding = { [weak self] in self?.dragging ?? false }
         strokes.onSilenced = { [weak self] in self?.strokeSilenced() }
         strokes.onGesture = { [weak self] gesture, fingers in self?.gestureDecided(gesture, fingers: fingers) }
+        strokes.onTouch = { [weak self] touch in self?.zoomTouch(touch) }
         addGestureRecognizer(strokes)
     }
 
@@ -341,6 +375,24 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
     /// the tracker at touch-down.
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         guard !strokes.silent else { return }
+        if gesture.state == .began {
+            zoomStroke.panBegan()
+            panAllowed = zoomStroke.scrollsMac
+            if zoomStroke.owner == .picture {
+                strokeZoomed = true
+                trackSuspended = true
+            }
+        }
+        guard panAllowed else {
+            if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+                lastTranslation = .zero
+                panTouches = 0
+            }
+            return
+        }
+        if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+            panAllowed = false
+        }
         switch gesture.state {
         case .began:
             panTouches = gesture.numberOfTouches
@@ -453,7 +505,10 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
         let down = event?.touches(for: self)?
             .filter { $0.phase != .ended && $0.phase != .cancelled }.count ?? 0
         // The first finger of a new stroke: carry on from wherever the pointer is now.
-        if down == touches.count { adoptAnchor() }
+        if down == touches.count {
+            if zoomStroke.fingers == 0 { strokeZoomed = false }
+            adoptAnchor()
+        }
         // Spin the Taptic Engine up now, so a tap's click lands without its start-up delay.
         clickHaptic.prepare()
         if down >= 2 { momentum.stop() }
@@ -482,13 +537,13 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
     }
 
     @objc private func handleTap() {
-        guard !strokes.silent else { return }
+        guard !strokes.silent, !strokeZoomed else { return }
         click(down: .leftDown, up: .leftUp)
     }
 
     /// Two fingers is the right button, the way a Mac trackpad's secondary click works.
     @objc private func handleTwoFingerTap() {
-        guard !strokes.silent else { return }
+        guard !strokes.silent, !strokeZoomed else { return }
         click(down: .rightDown, up: .rightUp)
     }
 
@@ -496,7 +551,9 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
         guard !strokes.silent else { return }
         switch gesture.state {
         case .began:
+            guard !strokeZoomed else { return }
             dragging = true
+            zoomStroke.panBegan()
             // Firmer than a click: the button is now held down.
             clickHaptic.impactOccurred(intensity: 1.0)
             catchUp()
@@ -518,12 +575,41 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
         }
     }
 
-    // MARK: - Three fingers
+    // MARK: - Pinch to zoom and three fingers
+
+    /// Every direct touch on the pad, from the stroke observer: who the stroke belongs to, and while
+    /// it is the picture's zoom, its pinch about the picture pane's middle (`StreamZoom.Stroke`).
+    /// Before there is a picture pane (`zoom.pane` empty), the stroke is judged as ever but nothing
+    /// zooms.
+    private func zoomTouch(_ touch: StrokeObserver.Touch) {
+        var z = zoom
+        var changed = false
+        switch touch {
+        case .down(let id, let point):
+            if zoomStroke.fingers == 0 { strokeZoomed = false }
+            zoomStroke.down(id, at: point, zoom: z)
+        case .moved(let moves):
+            changed = zoomStroke.moved(moves, zoom: &z, in: z.pane)
+        case .up(let id), .cancelled(let id):
+            changed = zoomStroke.up(id, zoom: &z)
+        }
+        if zoomStroke.owner == .picture {
+            strokeZoomed = true
+            trackSuspended = true
+        }
+        if changed { zoom = z }
+    }
 
     /// A stroke just went silent (TrackpadGestures: three fingers down): a two-finger scroll already
-    /// under way ends here, with no coast. Pointer motion before the third finger stays (at most
-    /// `chordTravel`); nothing else of the stroke goes out but its gesture.
+    /// under way ends here, with no coast, and a picture its first two fingers had pinched goes back
+    /// to how the stroke found it (`StreamZoom.Stroke`). Pointer motion before the third finger stays
+    /// (at most `chordTravel`); nothing else of the stroke goes out but its gesture.
     private func strokeSilenced() {
+        panAllowed = false
+        lastTranslation = .zero
+        panTouches = 0
+        var z = zoom
+        if zoomStroke.silenced(zoom: &z) { zoom = z }
         if scrolling { endScroll(momentumVelocity: nil) }
     }
 

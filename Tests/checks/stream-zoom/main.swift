@@ -226,12 +226,14 @@ do {
 /// A stroke, step by step, against a zoom: what the input view does with the stroke observer's touches.
 struct Rig {
     var zoom: Z
-    var stroke = S()
+    var stroke: S
     var size: CGSize
     /// The finger pan scrolls the Mac (it began while the stroke was the Mac's): what the input view sends.
     var scrolling = false
     var panBegun = false
-    init(_ zoom: Z = Z(), size: CGSize = CGSize(width: 1000, height: 650)) { self.zoom = zoom; self.size = size }
+    init(_ zoom: Z = Z(), size: CGSize = CGSize(width: 1000, height: 650), surface: S.Surface = .picture) {
+        self.zoom = zoom; self.size = size; self.stroke = S(surface: surface)
+    }
     mutating func down(_ id: Int, _ x: CGFloat, _ y: CGFloat) { stroke.down(id, at: CGPoint(x: x, y: y), zoom: zoom) }
     /// One finger moves (a touch event with only its move).
     mutating func move(_ id: Int, _ x: CGFloat, _ y: CGFloat) { stroke.moved([id: CGPoint(x: x, y: y)], zoom: &zoom, in: size) }
@@ -406,7 +408,7 @@ do {
     r.pan()
     check("moving them together moves the picture by as much: (50, 30)", near(r.zoom.offset.width, 50) && near(r.zoom.offset.height, 30) && near(r.zoom.scale, 2))
     check("and nothing goes to the Mac", !r.scrolling)
-    for k in 11...200 { r.moves([0: (450 + CGFloat(k) * 5, 300 + 30), 1: (550 + CGFloat(k) * 5, 300 + 30)]) }
+    for k in 11...200 { r.moves([0: (450 + CGFloat(k) * 5, 330), 1: (550 + CGFloat(k) * 5, 330)]) }
     check("the picture stops at the pane's edge: 500 at 2× in 1000", near(r.zoom.offset.width, 500) && covers(r.zoom, size))
     r.up(0); r.up(1)
     check("their lift: 2× kept", near(r.zoom.scale, 2))
@@ -572,6 +574,158 @@ do {
     check("20,000 random strokes: one finger never zooms and its pan is always the Mac's", i5)
     check("20,000 random strokes: a decided stroke keeps its owner to its last finger, and then it is over", i6)
     check("20,000 random strokes: two fingers in parallel on the whole picture are never the picture's", i7)
+}
+
+// MARK: - The stroke: trackpad
+
+do {
+    let pane = CGSize(width: 400, height: 300)
+    let center = CGPoint(x: 200, y: 150)
+
+    // Two fingers spreading off-centre on the trackpad at 1×: zooms about the picture pane's middle.
+    var r = Rig(Z(pane), size: pane, surface: .trackpad)
+    r.down(0, 60, 220); r.down(1, 120, 220)
+    check("trackpad: two fingers down at 1× are undecided", r.stroke.owner == .undecided)
+    r.moves([0: (56, 220), 1: (124, 220)])
+    check("trackpad: spread of 8 pt stays undecided", r.stroke.owner == .undecided && r.zoom == Z(pane))
+    r.moves([0: (53, 220), 1: (127, 220)])
+    check("trackpad: spread of 14 pt becomes zoom, caught up from landing (74 ÷ 60)",
+          r.stroke.owner == .picture && !r.stroke.scrollsMac && near(r.zoom.scale, 74.0 / 60.0))
+    check("trackpad: off-centre pinch zooms about the pane's middle (zero offset from 1×)",
+          near(r.zoom.offset.width, 0) && near(r.zoom.offset.height, 0))
+    r.moves([0: (15, 220), 1: (165, 220)])   // 150 apart: 2.5×
+    r.pan()
+    check("trackpad: pan starting mid-pinch does not scroll, scale 2.5×",
+          r.stroke.owner == .picture && !r.scrolling && near(r.zoom.scale, 2.5))
+    r.up(0)
+    let held = r.zoom
+    r.move(1, 250, 100)
+    check("trackpad: lifting one finger leaves zoom alone and does not scroll", r.zoom == held && !r.scrolling)
+    r.up(1)
+    check("trackpad: last lift ends stroke, keeps 2.5× and keeps .trackpad surface",
+          r.stroke.owner == .none && r.stroke.surface == .trackpad && near(r.zoom.scale, 2.5))
+
+    // Next stroke on the SAME Stroke instance while zoomed at 2.5×: two-finger parallel scroll must work!
+    r.panBegun = false; r.scrolling = false
+    r.down(10, 150, 200); r.down(11, 230, 200)
+    check("trackpad: two fingers down while zoomed stay undecided (not immediately zoom)",
+          r.stroke.owner == .undecided)
+    for k in 1...3 { r.moves([10: (150, 200 - CGFloat(k) * 4), 11: (230, 200 - CGFloat(k) * 4)]) }
+    r.pan()
+    for k in 4...20 { r.moves([10: (150 - CGFloat(k) * 0.5, 200 - CGFloat(k) * 4), 11: (230 + CGFloat(k) * 0.5, 200 - CGFloat(k) * 4)]) }
+    check("trackpad: two-finger scroll while zoomed (even drifting apart) scrolls the Mac and keeps 2.5×",
+          r.scrolling && r.stroke.owner == .mac && near(r.zoom.scale, 2.5))
+    r.up(10); r.up(11)
+
+    // Pinching out while zoomed and panned off-centre: keeps the picture point at the pane's middle.
+    let zOff = zoomed(2, at: CGPoint(x: 150, y: 120), in: pane)   // offset (50, 30)
+    let midBefore = zOff.unzoomedPoint(center, in: pane)
+    var s = Rig(zOff, size: pane, surface: .trackpad)
+    s.down(0, 50, 260); s.down(1, 170, 260)   // 120 apart, near bottom-left of pad
+    s.moves([0: (65, 260), 1: (155, 260)])    // 90 apart: 2 × 90 / 120 = 1.5×
+    check("trackpad: pinch in while zoomed zooms out to 1.5×", s.stroke.owner == .picture && near(s.zoom.scale, 1.5))
+    check("trackpad: off-centre zoomed picture stays centred on its middle point",
+          near(s.zoom.unzoomedPoint(center, in: pane), midBefore))
+    // One-finger-anchored pinch on trackpad: midpoint moves too, but picture still scales about pane middle.
+    s.move(1, 125, 260)   // 60 apart: 1.5 × 60 / 90 = 1.0×
+    check("trackpad: pinching all the way out resets to 1× centred", s.zoom.scale == 1 && s.zoom.offset == .zero)
+    s.up(0); s.up(1)
+
+    // One-finger-anchored spread from 1×: midpoint moves, spacing moves twice as much -> zoom with zero offset.
+    var a = Rig(Z(pane), size: pane, surface: .trackpad)
+    a.down(0, 200, 250); a.down(1, 200, 190)   // 60 apart
+    a.move(1, 200, 180)   // spacing 10, travel 5
+    a.pan()
+    check("trackpad: one-finger-anchored spread with panBegan (spacing 10 > travel 5) becomes zoom",
+          a.stroke.owner == .picture && !a.scrolling)
+    a.move(1, 200, 130)   // 120 apart: 2×
+    check("trackpad: one-finger-anchored spread to 2× keeps zero offset (no midpoint drift)",
+          near(a.zoom.scale, 2) && near(a.zoom.offset.width, 0) && near(a.zoom.offset.height, 0))
+    a.move(1, 200, -100)  // 350 apart: capped at 5×
+    check("trackpad: spread caps at 5×", a.zoom.scale == Z.maxScale)
+    a.up(0); a.up(1)
+
+    // Tie at panBegan while zoomed: Mac scroll wins.
+    var tie = Rig(zOff, size: pane, surface: .trackpad)
+    tie.down(0, 100, 200); tie.down(1, 200, 200)
+    tie.moves([0: (105, 200), 1: (215, 200)])   // spacing 10, travel 10
+    tie.pan()
+    check("trackpad: tie (spacing 10 == travel 10) while zoomed goes to Mac scroll",
+          tie.stroke.owner == .mac && tie.scrolling && tie.zoom == zOff)
+
+    // Three fingers on trackpad silence and revert any zoom the first two made.
+    var g = Rig(zOff, size: pane, surface: .trackpad)
+    g.down(0, 150, 200); g.down(1, 250, 200)
+    g.moves([0: (143, 200), 1: (257, 200)])   // 14 pt spread -> zoomed
+    check("trackpad: two fingers zoomed before third landed", g.zoom != zOff)
+    g.silence(); g.down(2, 200, 260)
+    check("trackpad: third finger silences and reverts zoom", g.stroke.owner == .gesture && g.zoom == zOff)
+    g.moves([0: (100, 200), 1: (300, 200), 2: (200, 320)])
+    g.pan()
+    check("trackpad: three-finger spread leaves zoom untouched and does not scroll", g.zoom == zOff && !g.scrolling)
+    g.up(0); g.up(1); g.up(2)
+    check("trackpad: lift after three-finger gesture keeps .trackpad surface",
+          g.stroke.owner == .none && g.stroke.surface == .trackpad && g.zoom == zOff)
+
+    // Lift within wholeBelow settles to 1×; empty pane never crashes or zooms.
+    var settle = Rig(zoomed(1.5, at: center, in: pane), size: pane, surface: .trackpad)
+    settle.down(0, 140, 200); settle.down(1, 260, 200)
+    settle.moves([0: (160, 200), 1: (240.8, 200)])   // 80.8 / 120 * 1.5 = 1.01×
+    let beforeLift = settle.zoom.scale
+    settle.up(0); settle.up(1)
+    check("trackpad: lift within 2% of 1× settles to 1×", beforeLift > 1 && beforeLift < 1.02 && settle.zoom == Z(pane))
+
+    var empty = Rig(Z(), size: .zero, surface: .trackpad)
+    empty.down(0, 100, 200); empty.down(1, 200, 200)
+    empty.moves([0: (70, 200), 1: (230, 200)])
+    check("trackpad: empty pane takes stroke without zooming", empty.stroke.owner == .picture && empty.zoom == Z())
+
+    // 5,000 random trackpad strokes: two fingers in parallel never zoom even while zoomed.
+    var rng = SystemRandomNumberGenerator()
+    var t1 = true, t2 = true, t3 = true, t4 = true, t5 = true
+    for _ in 0..<5_000 {
+        let start: Z = Bool.random(using: &rng) ? Z(pane)
+            : zoomed(.random(in: 1.1...5, using: &rng), at: CGPoint(x: .random(in: 0...pane.width, using: &rng), y: .random(in: 0...pane.height, using: &rng)), in: pane)
+        var r = Rig(start, size: pane, surface: .trackpad)
+        let fingers = Int.random(in: 1...3, using: &rng)
+        let parallel = Bool.random(using: &rng)
+        var positions: [CGPoint] = (0..<fingers).map { _ in CGPoint(x: .random(in: 50...350, using: &rng), y: .random(in: 50...250, using: &rng)) }
+        let landed = positions
+        let dir = CGPoint(x: .random(in: -8...8, using: &rng), y: .random(in: -8...8, using: &rng))
+        let spread = CGFloat.random(in: 0.9...1.1, using: &rng)
+        var owners: [S.Owner] = []
+        for (i, p) in positions.enumerated() {
+            if i == 2 { r.silence() }
+            r.down(i, p.x, p.y)
+        }
+        let steps = Int.random(in: 1...25, using: &rng)
+        for step in 1...steps {
+            var event: [Int: (CGFloat, CGFloat)] = [:]
+            let c = CGPoint(x: landed.map(\.x).reduce(0, +) / CGFloat(fingers), y: landed.map(\.y).reduce(0, +) / CGFloat(fingers))
+            for i in 0..<fingers {
+                let target = parallel
+                    ? CGPoint(x: landed[i].x + dir.x * CGFloat(step), y: landed[i].y + dir.y * CGFloat(step))
+                    : CGPoint(x: c.x + (landed[i].x - c.x) * pow(spread, CGFloat(step)), y: c.y + (landed[i].y - c.y) * pow(spread, CGFloat(step)))
+                positions[i] = target
+                event[i] = (target.x, target.y)
+            }
+            r.moves(event)
+            let now = CGPoint(x: positions.map(\.x).reduce(0, +) / CGFloat(fingers), y: positions.map(\.y).reduce(0, +) / CGFloat(fingers))
+            if hypot(now.x - c.x, now.y - c.y) >= 10 { r.pan() }
+            if !inRange(r.zoom) || !covers(r.zoom, pane) { t1 = false }
+            owners.append(r.stroke.owner)
+        }
+        if r.scrolling && r.zoom != start { t2 = false }
+        if fingers == 3 && r.zoom != start { t3 = false }
+        if fingers == 2 && parallel && (owners.contains(.picture) || r.zoom != start) { t4 = false }
+        for i in 0..<fingers { r.up(i) }
+        if r.stroke.owner != .none || r.stroke.surface != .trackpad { t5 = false }
+    }
+    check("5,000 random trackpad strokes: 1× to 5×, picture covers its pane", t1)
+    check("5,000 random trackpad strokes: a stroke that scrolled the Mac never zooms", t2)
+    check("5,000 random trackpad strokes: three fingers leave zoom as they found it", t3)
+    check("5,000 random trackpad strokes: two fingers in parallel never zoom (at 1× or while zoomed)", t4)
+    check("5,000 random trackpad strokes: lift resets owner and keeps .trackpad surface", t5)
 }
 
 print("\(passes) passed, \(fails) failed")

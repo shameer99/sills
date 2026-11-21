@@ -124,23 +124,36 @@ struct StreamZoom: Equatable, Sendable {
 }
 
 extension StreamZoom {
-    /// Who a stroke on the picture belongs to. One finger is always the Mac's (a tap, a hold, a drag's
-    /// scroll), as before the zoom. Two fingers at 1× are the Mac's scroll, as before, unless they pinch
-    /// first: their spacing changes more than their midpoint moves (`pinchTravel`, before the finger
-    /// pan begins; when it begins, `panBegan`), and then they are the picture's. On a zoomed picture any
-    /// two fingers are the picture's, as in Photos: they pinch it and move it, and one finger still
-    /// scrolls the Mac. Three fingers are the Mac's gesture (TrackpadGestures, `silenced`), and the
-    /// picture goes back to how the stroke found it. Once decided, a stroke keeps its owner until its
-    /// last finger lifts, so a scroll never turns into a zoom halfway, and a pinch's fingers never
+    /// Who a stroke belongs to. One finger is always the Mac's (a tap, a hold, a drag's scroll on the
+    /// picture; pointer motion on the trackpad), as before the zoom. Two fingers at 1× are the Mac's
+    /// scroll, as before, unless they pinch first: their spacing changes more than their midpoint moves
+    /// (`pinchTravel`, before the finger pan begins; when it begins, `panBegan`), and then they are the
+    /// picture's. On a zoomed picture (`.picture`), any two fingers are the picture's, as in Photos:
+    /// they pinch it and move it, and one finger still scrolls the Mac. On the portrait trackpad
+    /// (`.trackpad`), one finger moves the pointer and two fingers are the only way to scroll, so two
+    /// fingers while zoomed still scroll the Mac unless they pinch first, and a pinch zooms about the
+    /// picture pane's middle. Three fingers are the Mac's gesture (TrackpadGestures, `silenced`), and
+    /// the picture goes back to how the stroke found it. Once decided, a stroke keeps its owner until
+    /// its last finger lifts, so a scroll never turns into a zoom halfway, and a pinch's fingers never
     /// scroll the Mac when one of them lifts.
     ///
-    /// Fed every direct touch on the picture, in the pane's points, by the input view's stroke observer
-    /// (each touch's id as it landed; a touch event's moves together, so one event is one step); told
-    /// when the finger pan begins and when three fingers take the stroke. While the picture owns the stroke, the first two fingers down drive it: the factor is
-    /// their spacing now over their spacing at the last step, the midpoint theirs, and from the moment
-    /// they pinch it catches up from where they landed, so the point of the picture that was under them
-    /// stays under them.
+    /// Fed every direct touch on the surface by its stroke observer (each touch's id as it landed; a
+    /// touch event's moves together, so one event is one step); told when the finger pan begins and
+    /// when three fingers take the stroke. While the picture owns the stroke, the first two fingers
+    /// down drive it: the factor is their spacing now over their spacing at the last step, and from
+    /// the moment they pinch it catches up from where they landed (on the picture, keeping the point
+    /// under their midpoint under it; on the trackpad, about the picture pane's middle).
     struct Stroke: Equatable, Sendable {
+        enum Surface: Equatable, Sendable {
+            /// Direct touches on the picture: two fingers on a zoomed picture always own it (pan and
+            /// zoom), and a pinch anchors on the fingers' midpoint.
+            case picture
+            /// Touches on the portrait trackpad: two fingers scroll the Mac even while zoomed unless
+            /// their spacing changes more than their midpoint moves, and a pinch zooms about the
+            /// picture pane's middle.
+            case trackpad
+        }
+
         enum Owner: Equatable, Sendable {
             /// No finger down.
             case none
@@ -160,6 +173,14 @@ extension StreamZoom {
         /// Two fingers closer than this tell no scale (they are one on the glass).
         static let minSpacing: CGFloat = 1
 
+        /// Which surface feeds this stroke: direct touches on the picture (the default), or the
+        /// portrait trackpad. Kept across strokes when the last finger lifts.
+        let surface: Surface
+
+        init(surface: Surface = .picture) {
+            self.surface = surface
+        }
+
         private(set) var owner: Owner = .none
         /// Every finger down, where it is now.
         private var at: [Int: CGPoint] = [:]
@@ -178,8 +199,9 @@ extension StreamZoom {
         /// Fingers down now.
         var fingers: Int { at.count }
 
-        /// A finger lands at `point`. Two fingers down make the pair; on a zoomed picture they are the
-        /// picture's at once, and so are two down again after one of a picture's pair lifted.
+        /// A finger lands at `point`. Two fingers down make the pair; on a zoomed picture (`.picture`)
+        /// they are the picture's at once, and so are two down again after one of a picture's pair
+        /// lifted.
         mutating func down(_ id: Int, at point: CGPoint, zoom: StreamZoom) {
             if owner == .none {
                 owner = .undecided
@@ -188,7 +210,7 @@ extension StreamZoom {
             at[id] = point
             guard owner == .undecided || owner == .picture, pair.count < 2, at.count == 2 else { return }
             formPair()
-            if owner == .undecided, zoom.isZoomed { owner = .picture }
+            if surface == .picture, owner == .undecided, zoom.isZoomed { owner = .picture }
         }
 
         /// Fingers move, one touch event's together (each id to where it is now): while the picture owns
@@ -214,7 +236,13 @@ extension StreamZoom {
             let was = Self.distance(last[0], last[1]), now = Self.distance(a, b)
             guard was >= Self.minSpacing, now >= Self.minSpacing else { return false }
             let before = zoom
-            zoom.pinch(factor: now / was, from: Self.midpoint(last[0], last[1]), to: Self.midpoint(a, b), in: size)
+            switch surface {
+            case .picture:
+                zoom.pinch(factor: now / was, from: Self.midpoint(last[0], last[1]), to: Self.midpoint(a, b), in: size)
+            case .trackpad:
+                let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                zoom.pinch(factor: now / was, from: center, to: center, in: size)
+            }
             made = zoom
             return zoom != before
         }
@@ -250,7 +278,7 @@ extension StreamZoom {
             }
             guard at.isEmpty else { return false }
             let ended = owner
-            self = Stroke()
+            self = Stroke(surface: surface)
             guard ended == .picture else { return false }
             let before = zoom
             zoom.settle()
