@@ -171,6 +171,9 @@ extension StreamZoom {
         /// How far two fingers' spacing changes, more than their midpoint moves, before the finger pan
         /// begins, for a pinch: the picture's.
         static let pinchTravel: CGFloat = 12
+        /// How far a zoomed pair's midpoint moves or its spacing changes before it moves the picture;
+        /// under it, two fingers still make a tap.
+        static let tapTravel: CGFloat = 8
         /// Two fingers closer than this tell no scale (they are one on the glass).
         static let minSpacing: CGFloat = 1
 
@@ -183,6 +186,10 @@ extension StreamZoom {
         }
 
         private(set) var owner: Owner = .none
+        /// The picture owns the stroke and its pair has moved or pinched past `tapTravel` since it
+        /// landed (or won a pinch from undecided). Until this is true, two fingers on a zoomed
+        /// picture have not moved it and still make a tap.
+        private(set) var engaged = false
         /// Every finger down, where it is now.
         private var at: [Int: CGPoint] = [:]
         /// The two fingers that drive the picture, in the order they landed.
@@ -231,8 +238,14 @@ extension StreamZoom {
                 let (spacing, travel) = Self.change(from: pairFrom, to: [a, b])
                 guard spacing >= Self.pinchTravel, spacing > travel else { return false }
                 owner = .picture   // a pinch: caught up from where the pair landed (pairLast == pairFrom)
+                engaged = true
             }
             guard owner == .picture else { return false }
+            if !engaged {
+                let (spacing, travel) = Self.change(from: pairFrom, to: [a, b])
+                guard max(spacing, travel) >= Self.tapTravel else { return false }
+                engaged = true
+            }
             let last = pairLast
             pairLast = [a, b]
             let was = Self.distance(last[0], last[1]), now = Self.distance(a, b)
@@ -262,6 +275,7 @@ extension StreamZoom {
                 let (spacing, travel) = Self.change(from: pairFrom, to: [a, b])
                 if spacing > travel {
                     owner = .picture
+                    engaged = true
                     return
                 }
             }
@@ -296,6 +310,7 @@ extension StreamZoom {
         mutating func silenced(zoom: inout StreamZoom) -> Bool {
             let was = owner
             owner = .gesture
+            engaged = false
             pair = []
             pairFrom = []
             pairLast = []

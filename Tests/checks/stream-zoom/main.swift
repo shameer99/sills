@@ -587,10 +587,10 @@ do {
     r.down(0, 60, 220); r.down(1, 120, 220)
     check("trackpad: two fingers down at 1× are undecided", r.stroke.owner == .undecided)
     r.moves([0: (56, 220), 1: (124, 220)])
-    check("trackpad: spread of 8 pt stays undecided", r.stroke.owner == .undecided && r.zoom == Z(pane))
+    check("trackpad: spread of 8 pt stays undecided", r.stroke.owner == .undecided && !r.stroke.engaged && r.zoom == Z(pane))
     r.moves([0: (53, 220), 1: (127, 220)])
-    check("trackpad: spread of 14 pt becomes zoom, caught up from landing (74 ÷ 60)",
-          r.stroke.owner == .picture && !r.stroke.scrollsMac && near(r.zoom.scale, 74.0 / 60.0))
+    check("trackpad: spread of 14 pt becomes zoom, engaged, caught up from landing (74 ÷ 60)",
+          r.stroke.owner == .picture && r.stroke.engaged && !r.stroke.scrollsMac && near(r.zoom.scale, 74.0 / 60.0))
     check("trackpad: off-centre pinch zooms about the pane's middle (zero offset from 1×)",
           near(r.zoom.offset.width, 0) && near(r.zoom.offset.height, 0))
     r.moves([0: (15, 220), 1: (165, 220)])   // 150 apart: 2.5×
@@ -603,19 +603,42 @@ do {
     check("trackpad: lifting one finger leaves zoom alone and does not scroll", r.zoom == held && !r.scrolling)
     r.up(1)
     check("trackpad: last lift ends stroke, keeps 2.5× and keeps .trackpad surface",
-          r.stroke.owner == .none && r.stroke.surface == .trackpad && near(r.zoom.scale, 2.5))
+          r.stroke.owner == .none && !r.stroke.engaged && r.stroke.surface == .trackpad && near(r.zoom.scale, 2.5))
+
+    // Two-finger tap while zoomed on trackpad: jitter under tapTravel never engages or moves the
+    // picture, so TrackpadView's (owner == .picture && engaged) stays false and a right-click fires.
+    let tapStart = zoomed(2.5, at: CGPoint(x: 150, y: 120), in: pane)
+    var tap = Rig(tapStart, size: pane, surface: .trackpad)
+    tap.down(0, 140, 200); tap.down(1, 220, 200)
+    let engagedAtDown = tap.stroke.engaged
+    tap.moves([0: (142, 202), 1: (224, 202)])   // midpoint travel ~3.6 pt, spacing change 2 pt (both < tapTravel)
+    let engagedAtJitter = tap.stroke.engaged
+    let zoomAtJitter = tap.zoom
+    tap.up(0)
+    let engagedAtFirstUp = tap.stroke.engaged
+    tap.up(1)
+    check("trackpad: two-finger tap while zoomed with jitter under tapTravel stays unengaged, leaves zoom unchanged and never scrolls",
+          !engagedAtDown && !engagedAtJitter && !engagedAtFirstUp && !tap.stroke.engaged
+          && zoomAtJitter == tapStart && tap.zoom == tapStart && !tap.scrolling && tap.stroke.owner == .none)
 
     // Next stroke on the SAME Stroke instance while zoomed at 2.5×: two-finger parallel drag pans the zoomed picture.
     r.panBegun = false; r.scrolling = false
     r.down(10, 150, 200); r.down(11, 230, 200)
-    check("trackpad: two fingers down while zoomed own the picture at once",
-          r.stroke.owner == .picture && !r.stroke.scrollsMac)
-    for k in 1...10 {
+    check("trackpad: two fingers down while zoomed own the picture at once but are not yet engaged",
+          r.stroke.owner == .picture && !r.stroke.engaged && !r.stroke.scrollsMac)
+    r.moves([10: (154, 197), 11: (234, 197)])   // 5 pt travel (< tapTravel): still unengaged, zoom unchanged
+    check("trackpad: parallel move under tapTravel stays unengaged and leaves offset at 0",
+          r.stroke.owner == .picture && !r.stroke.engaged && near(r.zoom.offset.width, 0) && near(r.zoom.offset.height, 0))
+    for k in 2...10 {
         r.moves([10: (150 + CGFloat(k) * 4, 200 - CGFloat(k) * 3), 11: (230 + CGFloat(k) * 4, 200 - CGFloat(k) * 3)])
+        if k == 2 {
+            check("trackpad: parallel drag past tapTravel (10 pt) engages and catches up from landing",
+                  r.stroke.engaged && near(r.zoom.offset.width, 8) && near(r.zoom.offset.height, -6))
+        }
         if k == 3 { r.pan() }
     }
-    check("trackpad: two-finger parallel drag while zoomed moves offset by the drag and does not scroll the Mac",
-          !r.scrolling && r.stroke.owner == .picture && near(r.zoom.scale, 2.5)
+    check("trackpad: two-finger parallel drag while zoomed moves offset by the full drag from landing and does not scroll the Mac",
+          !r.scrolling && r.stroke.owner == .picture && r.stroke.engaged && near(r.zoom.scale, 2.5)
           && near(r.zoom.offset.width, 40) && near(r.zoom.offset.height, -30))
     // Pan clamps at ±size·(scale − 1)/2 on both axes (300, 225 at 2.5× in 400×300).
     r.moves([10: (190 + 500, 170 - 500), 11: (270 + 500, 170 - 500)])
@@ -665,8 +688,8 @@ do {
     a.down(0, 200, 250); a.down(1, 200, 190)   // 60 apart
     a.move(1, 200, 180)   // spacing 10, travel 5
     a.pan()
-    check("trackpad: one-finger-anchored spread with panBegan (spacing 10 > travel 5) becomes zoom",
-          a.stroke.owner == .picture && !a.scrolling)
+    check("trackpad: one-finger-anchored spread with panBegan (spacing 10 > travel 5) becomes zoom and engaged",
+          a.stroke.owner == .picture && a.stroke.engaged && !a.scrolling)
     a.move(1, 200, 130)   // 120 apart: 2×, midpoint moved (0, -30)
     check("trackpad: one-finger-anchored spread to 2× scales and pans by midpoint delta (0, -30)",
           near(a.zoom.scale, 2) && near(a.zoom.offset.width, 0) && near(a.zoom.offset.height, -30))

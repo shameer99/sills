@@ -162,9 +162,10 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
         set { if let writeZoom { writeZoom(newValue) } else { ownZoom = newValue } }
     }
     /// Who a stroke on the pad belongs to, the Mac or the picture's zoom (`StreamZoom.Stroke`,
-    /// `.trackpad`), from every direct touch the stroke observer sees. Two fingers zoom the picture
-    /// only when their spacing changes more than their midpoint moves, even while zoomed, so
-    /// two-finger scrolling keeps working.
+    /// `.trackpad`), from every direct touch the stroke observer sees. At 1× two fingers scroll
+    /// the Mac unless they pinch first (their spacing changes more than their midpoint moves);
+    /// while zoomed, any two fingers own the picture to pinch and pan it once they move past
+    /// `tapTravel`, leaving a stationary two-finger tap as a right-click.
     private var zoomStroke = StreamZoom.Stroke(surface: .trackpad)
     /// The pan may drive the Mac (scroll or move the pointer): its stroke was the Mac's when it
     /// began. A pan whose stroke the picture's zoom took sends nothing to the Mac, to its end.
@@ -593,7 +594,7 @@ final class TrackpadSurface: UIView, UIGestureRecognizerDelegate {
         case .up(let id), .cancelled(let id):
             changed = zoomStroke.up(id, zoom: &z)
         }
-        if zoomStroke.owner == .picture {
+        if zoomStroke.owner == .picture && zoomStroke.engaged {
             strokeZoomed = true
             trackSuspended = true
         }
