@@ -350,6 +350,20 @@ let nextMessage = StreamMessage(kind: .nextDisplay, timestamp: 1, isKeyframe: fa
 check(StreamMessage.parseHeader(nextMessage).map { $0.kind == .nextDisplay && $0.payloadLength == 0 } == true
       && nextMessage[nextMessage.startIndex] == 47, "kind 47's header parses, its payload empty")
 
+// Kind 48 (TextFocus) and the window list's `textFocus`: additive both ways.
+var focuses = named
+focuses.textFocus = TextFocus.generation
+check(json(focuses).contains(#""textFocus":1"#), "a list from a host with textFocus says textFocus 1: \(json(focuses))")
+check(!json(named).contains("textFocus") && named.textFocus == nil, "a list without textFocus leaves the key out")
+check(decodedOld != nil && decodedOld?.textFocus == nil, "an older host's list decodes, textFocus nil")
+check(Wire.decode(WindowList.self, from: Wire.encode(focuses)).map { $0.textFocus == 1 && $0.keyRepeat == 1 } == true,
+      "textFocus round-trips beside keyRepeat")
+check(Wire.decode(ReaderBefore.self, from: Wire.encode(focuses)).map { $0.macName == "Mac mini" && $0.clipboard == 1 } == true,
+      "a reader from before it skips textFocus")
+check(StreamMessageKind.textFocus.rawValue == 48 && StreamMessageKind(rawValue: 48) == .textFocus, "kind 48 is textFocus")
+let focusMsg = StreamMessage(kind: .textFocus, timestamp: 1, isKeyframe: false, payload: Wire.encode(TextFocus(editable: true, secure: true))).serialized()
+check(StreamMessage.parseHeader(focusMsg)?.kind == .textFocus, "the textFocus header parses")
+
 // For H4: what cb0ec55's StreamProtocol must read.
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
 if let out {

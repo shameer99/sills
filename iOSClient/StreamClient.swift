@@ -263,6 +263,7 @@ final class StreamClient: ObservableObject {
         didSet {
             // The pointer sprite shows nothing while nothing streams.
             let streaming = active != .none
+            if !streaming && textFocus != nil { textFocus = nil }
             if presence.streaming != streaming {
                 presence.streaming = streaming
                 renderPointer()
@@ -955,6 +956,12 @@ final class StreamClient: ObservableObject {
     /// then says ("Display 2 of 3, DELL U2723QE"): the stop shown when the tap went out, and when. Another
     /// device's step moves this button unannounced.
     private var desktopStepSentFrom: (stop: Int?, at: Date)?
+    /// Whether this session's Mac reports focused text-field transitions (`WindowList.textFocus`, kind 48):
+    /// 1 for `editable` and `secure`, nil from older Macs. Cleared with the session.
+    var hostTextFocus: Int?
+    /// Whether the streamed Mac's focused UI element is an editable text field (kind 48, `TextFocus`).
+    /// Nil while disconnected, while nothing streams, or against older hosts. Main thread.
+    @Published private(set) var textFocus: TextFocus?
     /// The clipboard (kind 32, StreamClient+Clipboard, docs/clipboard-plan.md): what this session's
     /// Mac takes and sends (`WindowList.clipboard`, 1 for text), nil from a Mac before it or with Share
     /// clipboard with devices off. Cleared with the session.
@@ -3733,6 +3740,8 @@ final class StreamClient: ObservableObject {
         hostDesktopDisplay = nil
         hostDesktopDisplayNames = nil
         desktopStepSentFrom = nil
+        hostTextFocus = nil
+        textFocus = nil
         remoteRoute = nil
         macInfo = nil
         macInfoSaved = false
@@ -4439,6 +4448,7 @@ final class StreamClient: ObservableObject {
                 if self.hostGestures != list.gestures { self.hostGestures = list.gestures }
                 self.hostKeyRepeat = list.keyRepeat
                 self.desktopStopsChanged(list)
+                self.hostTextFocus = list.textFocus
                 // A locked Mac's list has no windows: the drawer and the panel say why, the cover over the
                 // stream too (LockedMac).
                 if self.lockWhy != why { self.lockWhy = why }
@@ -4614,6 +4624,14 @@ final class StreamClient: ObservableObject {
                 // A replaced connection's answer must not settle, or describe, the next one's menus.
                 guard self.connection === from else { return }
                 self.receiveMenus(menu)
+            }
+        case .textFocus:
+            // Whether the streamed Mac app's focused UI element is an editable text field (kind 48).
+            guard let focus = Wire.decode(TextFocus.self, from: data) else { return }
+            let from = connection
+            DispatchQueue.main.async {
+                guard self.connection === from else { return }
+                if self.textFocus != focus { self.textFocus = focus }
             }
         default:
             break // client → host kinds, and anything a newer host invents

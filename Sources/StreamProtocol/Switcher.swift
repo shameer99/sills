@@ -100,6 +100,10 @@ public struct WindowList: Codable {
     /// left out otherwise and by every host before. A device keeps the picture, covers nothing and says what it
     /// is (`LockedMac.viewLine`).
     public var offConsoleView: Bool?
+    /// Whether this host sends focused text-field transitions (kind 48, TextFocus.swift): 1 is
+    /// `editable` and `secure`. Nil from older hosts. Set after the initializer, whose parameters
+    /// stay as they were: `list.textFocus = TextFocus.generation`.
+    public var textFocus: Int?
 
     public init(macName: String, windows: [WindowInfo], active: StreamSource, launchID: String? = nil,
                 hostVersion: String? = nil, protocol: Int? = nil, gestures: Int? = nil, clipboard: Int? = nil) {

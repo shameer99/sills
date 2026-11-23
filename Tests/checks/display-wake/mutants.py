@@ -39,6 +39,7 @@ MUTANTS = {
     "M21 show your pairing code counts": (LAUNCH, "            case .pairingWanted: return .input\n" + LAUNCH),
     "M61 the Mac's sound counts (only a host sends it)": (LAUNCH, "            case .audio: return .input\n" + LAUNCH),
     "M21b a keyframe request counts": (LAUNCH, "            case .keyframeRequest: return .input\n" + LAUNCH),
+    "M21c text focus counts (only a host sends it)": (LAUNCH, "            case .textFocus: return .input\n" + LAUNCH),
     "M22 every other kind counts": ("            default: return nil", "            default: return .input"),
     "M23 input that does not decode counts": ("guard let input else { return nil }", "guard let input else { return .input }"),
     "M24 a gesture said as a menu item": ("            case .gesture: return .gesture\n", "            case .gesture: return .menuItem\n"),

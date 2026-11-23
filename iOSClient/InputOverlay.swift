@@ -775,6 +775,7 @@ final class InputOverlayView: UIView, UITextInput, UIGestureRecognizerDelegate {
     override var editingInteractionConfiguration: UIEditingInteractionConfiguration { .none }
 
     @objc var keyboardType: UIKeyboardType = .default
+    @objc var isSecureTextEntry: Bool = false
     @objc var autocorrectionType: UITextAutocorrectionType = .no
     @objc var autocapitalizationType: UITextAutocapitalizationType = .none
     @objc var smartQuotesType: UITextSmartQuotesType = .no
@@ -936,6 +937,15 @@ final class InputOverlayView: UIView, UITextInput, UIGestureRecognizerDelegate {
         askedAutomatic = automatic
         _ = becomeFirstResponder()
         askedAutomatic = nil
+    }
+
+    /// Updates secure-text entry for the Mac's focused field (kind 48) without leaving previous typed
+    /// text in the composition buffer.
+    func setSecureTextEntry(_ secure: Bool) {
+        guard isSecureTextEntry != secure else { return }
+        if secure { forgetTyped() }
+        isSecureTextEntry = secure
+        if isFirstResponder && !holdsForHardwareKeyboard { reloadInputViews() }
     }
 
     /// The proxy's `makeOwn` and `makeAutomatic`: the same first responder, now the person's (the
@@ -1464,6 +1474,10 @@ final class InputOverlayProxy {
     /// The person's own keyboard came up or went: the Keyboard button lights, the tour counts it.
     /// The hardware keyboard's holding never calls it.
     var onOwnChange: ((Bool) -> Void)?
+    /// Whether the person opened the keyboard themselves (not automatically for Mac text focus).
+    var isManualKeyboardShown: Bool { policy.isManualOwn }
+    /// Whether the Mac's currently focused editable field is secure (password).
+    private(set) var isSecureTextEntry = false
 
     /// The Keyboard button (and the portrait key row's keyboard cap).
     func toggleKeyboard() { change("the Keyboard button") { $0.toggled() } }
@@ -1478,6 +1492,15 @@ final class InputOverlayProxy {
     func update(takers: Set<HardwareKeyboardPolicy.Taker>) {
         change(takers.isEmpty ? "nothing open" : takers.map(\.rawValue).sorted().joined(separator: ", ") + " open") { $0.takers(takers) }
     }
+    /// The streamed Mac's focused UI element changed (kind 48, `TextFocus`).
+    func update(textFocus editable: Bool, secure: Bool = false) {
+        isSecureTextEntry = editable && secure
+        view?.setSecureTextEntry(isSecureTextEntry)
+        change(editable ? (secure ? "Mac focused a secure text field" : "Mac focused a text field")
+                        : "Mac left text focus") {
+            $0.textFocus(editable: editable)
+        }
+    }
     /// Something that may move the Mac's caret is going to the Mac, from anywhere on the stream screen
     /// (StreamClient.onCaretMayMove, before it goes out: the portrait trackpad's clicks, the key row's
     /// keys, a pick, a menu item, a gesture, and the input view's own clicks and keys), or the streamed
@@ -1490,6 +1513,7 @@ final class InputOverlayProxy {
 
     func joined(_ view: InputOverlayView) {
         guard view === self.view else { return }
+        view.setSecureTextEntry(isSecureTextEntry)
         // A turn later: SwiftUI is still placing the view, and a first responder taken mid-update can
         // be lost to the old layout's teardown.
         DispatchQueue.main.async { [weak self, weak view] in

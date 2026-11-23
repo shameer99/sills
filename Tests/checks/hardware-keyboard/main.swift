@@ -36,6 +36,7 @@ enum Event: CustomStringConvertible, Equatable {
     case show(Bool)      // setKeyboard(shown:): a restore of the person's keyboard, or a taker taking it down
     case otherTakes      // another responder (a text field the rule does not know) takes the keyboard
     case givesBack       // UIKit makes the view first responder by itself
+    case textFocus(Bool) // kind 48: Mac focused UI element became editable or non-editable
 
     var description: String {
         switch self {
@@ -47,6 +48,7 @@ enum Event: CustomStringConvertible, Equatable {
         case .show(let s): return "show(\(s))"
         case .otherTakes: return "otherTakes"
         case .givesBack: return "givesBack"
+        case .textFocus(let e): return e ? "textFocus(on)" : "textFocus(off)"
         }
     }
 }
@@ -126,6 +128,8 @@ struct Sim {
             // The view asks the rule for the kind before it becomes first responder (its input view).
             responder = policy.unpromptedKind
             perform(policy.became(automatic: nil))
+        case .textFocus(let editable):
+            perform(policy.textFocus(editable: editable))
         }
     }
 
@@ -337,6 +341,198 @@ do {
 // The descriptions the console prints.
 check("actions read", P.Action.take(automatic: true).description == "take (hardware keyboard)"
       && P.Action.take(automatic: false).description == "take (the person's)" && P.Action.letGo.description == "let go")
+
+// MARK: - Automatic soft keyboard on Mac text focus (kind 48)
+
+// Basic auto-show and auto-dismiss with no hardware keyboard and nothing open.
+do {
+    var s = run([.join], attached: false)
+    s.actions = []
+    s.apply(.textFocus(true))
+    check("textFocus on without hardware keyboard: soft keyboard auto-shows",
+          s.actions == [.take(automatic: false)] && s.policy.hold == .own && s.policy.isOwn && s.policy.autoSoft && !s.policy.isManualOwn)
+    s.actions = []
+    s.apply(.textFocus(true))
+    check("repeated textFocus on: no-op", s.actions.isEmpty && s.policy.autoSoft)
+    s.apply(.textFocus(false))
+    check("textFocus off: auto-shown soft keyboard dismisses",
+          s.actions == [.letGo] && s.policy.hold == .none && !s.policy.autoSoft)
+}
+// Hardware keyboard attached: Mac text focus never pops the software keyboard or drops the hardware hold.
+do {
+    var s = run([.join], attached: true)
+    s.actions = []
+    s.apply(.textFocus(true))
+    check("textFocus on with hardware keyboard attached: stays invisible hardware hold",
+          s.actions.isEmpty && s.policy.hold == .automatic && !s.policy.isOwn)
+    s.apply(.textFocus(false))
+    check("textFocus off with hardware keyboard attached: stays invisible hardware hold",
+          s.actions.isEmpty && s.policy.hold == .automatic)
+}
+// Hardware keyboard attaching/detaching during editable text focus.
+do {
+    var s = run([.join, .textFocus(true)], attached: false)
+    s.actions = []
+    s.apply(.attach(true))
+    check("hardware keyboard attaches over auto-shown soft keyboard: switches to invisible hold",
+          s.actions == [.makeAutomatic] && s.policy.hold == .automatic && !s.policy.autoSoft)
+    s.actions = []
+    s.apply(.attach(false))
+    check("hardware keyboard detaches while focused in Mac text field: hands over to auto-shown soft keyboard",
+          s.actions == [.makeOwn] && s.policy.hold == .own && s.policy.autoSoft)
+    s.actions = []
+    s.apply(.textFocus(false))
+    check("leaving focus after detach hand-over still auto-dismisses",
+          s.actions == [.letGo] && s.policy.hold == .none)
+}
+// Local takers block auto-show, dismiss auto-shown soft keyboard, and restore it when closed if still focused.
+for taker in P.Taker.allCases {
+    var s = run([.join, .takers([taker])], attached: false)
+    s.actions = []
+    s.apply(.textFocus(true))
+    check("textFocus on while \(taker) open: does not auto-show", s.actions.isEmpty && s.policy.hold == .none)
+    s.apply(.takers(none))
+    check("\(taker) closing while textFocus on: auto-shows soft keyboard",
+          s.actions == [.take(automatic: false)] && s.policy.hold == .own && s.policy.autoSoft)
+    s.actions = []
+    s.apply(.takers([taker]))
+    check("\(taker) opening over auto-shown soft keyboard: auto-dismisses without marking manual dismiss",
+          s.actions == [.letGo] && s.policy.hold == .none && !s.policy.softDismissed)
+    s.actions = []
+    s.apply(.takers(none))
+    check("\(taker) closing again while still focused: auto-shows again",
+          s.actions == [.take(automatic: false)] && s.policy.autoSoft)
+}
+// Settings opening over auto-shown soft keyboard (`show(false)` then `takers([.settings])`):
+// closing Settings restores it only if Mac text focus is still editable.
+do {
+    var s = run([.join, .textFocus(true)], attached: false)
+    s.actions = []
+    s.apply(.show(false)); s.apply(.takers([.settings]))
+    check("Settings over auto-soft: dismissed without softDismissed", s.actions == [.letGo] && !s.policy.softDismissed)
+    s.actions = []
+    s.apply(.textFocus(false))
+    s.apply(.takers(none))
+    check("Settings closing after Mac left focus: stays down", s.actions.isEmpty && s.policy.hold == .none)
+
+    var s2 = run([.join, .textFocus(true), .show(false), .takers([.settings])], attached: false)
+    s2.actions = []
+    s2.apply(.takers(none))
+    check("Settings closing while still focused: auto-soft comes back", s2.actions == [.take(automatic: false)] && s2.policy.autoSoft)
+}
+// Manual dismiss override within the same focus (via Keyboard button and via iPadOS dismiss key).
+do {
+    var s = run([.join, .textFocus(true)], attached: false)
+    s.actions = []
+    s.apply(.toggle)
+    check("manual dismiss via Keyboard button sets softDismissed",
+          s.actions == [.letGo] && s.policy.hold == .none && s.policy.softDismissed)
+    s.actions = []
+    s.apply(.textFocus(true))
+    s.apply(.takers([.drawer])); s.apply(.takers(none))
+    s.apply(.join)
+    s.apply(.attach(true)); s.apply(.attach(false))
+    check("manual dismiss respected across repeat, taker, rotation, and hw attach/detach in same focus",
+          s.policy.hold == .none && s.policy.softDismissed)
+    s.actions = []
+    s.apply(.textFocus(false))
+    check("leaving focus clears softDismissed", s.actions.isEmpty && !s.policy.softDismissed)
+    s.apply(.textFocus(true))
+    check("entering a new focus auto-shows again", s.actions == [.take(automatic: false)] && s.policy.autoSoft)
+
+    // External dismiss (iPadOS keyboard's own dismiss key -> resigned while autoSoft & no takers)
+    s.actions = []
+    s.apply(.otherTakes)
+    check("external dismiss during focus sets softDismissed", s.policy.hold == .none && s.policy.softDismissed)
+    s.actions = []
+    s.apply(.takers([.drawer])); s.apply(.takers(none))
+    check("external dismiss respected after taker closes in same focus", s.actions.isEmpty && s.policy.hold == .none)
+    s.actions = []
+    s.apply(.givesBack)
+    check("UIKit giving back an externally dismissed auto-soft lets go immediately",
+          s.actions == [.letGo] && s.policy.hold == .none)
+    // Tapping Keyboard button manually opens it again even while softDismissed was set.
+    s.actions = []
+    s.apply(.toggle)
+    check("manual open after manual dismiss opens as manual own",
+          s.actions == [.take(automatic: false)] && s.policy.isManualOwn && !s.policy.softDismissed)
+}
+// Manual open override within the same focus (and across focus leaving): never auto-dismissed.
+do {
+    var s = run([.join, .toggle], attached: false)
+    check("manual open while unfocused: isManualOwn", s.policy.isManualOwn && !s.policy.autoSoft)
+    s.actions = []
+    s.apply(.textFocus(false))
+    s.apply(.takers([.drawer])); s.apply(.takers(none))
+    s.apply(.textFocus(true))
+    s.apply(.textFocus(false))
+    check("manual open is never auto-dismissed by textFocus transitions or drawer",
+          s.actions.isEmpty && s.policy.isManualOwn)
+}
+// Rotation while focused with no hardware keyboard keeps soft keyboard up automatically.
+do {
+    var s = run([.join, .textFocus(true)], attached: false)
+    s.actions = []
+    s.apply(.join)
+    check("rotation while focused without hardware keyboard auto-shows on new view",
+          s.actions == [.take(automatic: false)] && s.policy.hold == .own && s.policy.autoSoft)
+}
+
+// Random sessions with textFocus enabled: verify key invariants across 10,000 sessions.
+do {
+    var fRng = Rng(state: 0x7465_7874_666F_6375)
+    var fViolations = 0, autoSoftStates = 0, dismissedStates = 0
+    for _ in 0..<10_000 {
+        var sim = Sim(attached: fRng.chance(30))
+        if fRng.chance(90) { sim.apply(.join) }
+        for _ in 0..<(10 + fRng.below(40)) {
+            let e: Event
+            switch fRng.below(14) {
+            case 0: e = .join
+            case 1: e = fRng.chance(25) ? .leave : .join
+            case 2: e = .attach(fRng.chance(35))
+            case 3, 4:
+                var t = sim.takers
+                let taker = P.Taker.allCases[fRng.below(P.Taker.allCases.count)]
+                if t.contains(taker) { t.remove(taker) } else { t.insert(taker) }
+                e = .takers(t)
+            case 5: e = .takers(none)
+            case 6, 7: e = .toggle
+            case 8: e = .show(fRng.chance(50))
+            case 9: e = .otherTakes
+            case 10: e = .givesBack
+            default: e = .textFocus(fRng.chance(55))
+            }
+            let wasManual = sim.policy.isManualOwn
+            sim.apply(e)
+            if sim.policy.autoSoft { autoSoftStates += 1 }
+            if sim.policy.softDismissed { dismissedStates += 1 }
+            // Invariants:
+            // F1: proxy never asks for impossible action and rule agrees with UIKit
+            if !sim.problems.isEmpty || sim.policy.hold != sim.responder { fViolations += 1; break }
+            // F2: autoSoft only when hold == .own, onScreen, !attached, takers.isEmpty, textFocus, !softDismissed
+            if sim.policy.autoSoft && !(sim.policy.hold == .own && sim.inWindow && !sim.attached && sim.takers.isEmpty && sim.policy.textFocus && !sim.policy.softDismissed) {
+                fViolations += 1; break
+            }
+            // F3: hardware hold only when onScreen, attached, takers.isEmpty
+            if sim.responder == .automatic && !(sim.attached && sim.inWindow && sim.takers.isEmpty) {
+                fViolations += 1; break
+            }
+            // F4: manual own is never taken away by textFocus, attach, detach, or takers
+            if wasManual {
+                switch e {
+                case .textFocus, .attach, .takers:
+                    if !sim.policy.isManualOwn { fViolations += 1 }
+                default: break
+                }
+                if fViolations > 0 { break }
+            }
+        }
+        if fViolations > 0 { break }
+    }
+    check("10,000 random sessions with textFocus (\(autoSoftStates) auto-soft states, \(dismissedStates) manual-dismiss states): every invariant",
+          fViolations == 0 && autoSoftStates > 5_000 && dismissedStates > 1_000)
+}
 
 // MARK: - Random sessions
 

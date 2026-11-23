@@ -66,6 +66,22 @@ struct HardwareKeyboardPolicy: Equatable {
     /// What this view held before it last let go, for a first responder UIKit gives back by itself
     /// (after a presentation): the same again.
     private(set) var lastHeld: Hold = .none
+    /// Whether the streamed Mac reports editable text focus (kind 48, `TextFocus`).
+    private(set) var textFocus = false
+    /// Whether the current `.own` hold was opened automatically for Mac text focus (rather than
+    /// manually by the person), so it auto-dismisses when focus leaves, a taker opens, or a
+    /// hardware keyboard attaches.
+    private(set) var autoSoft = false
+    /// Whether `lastHeld` was `.own` opened automatically for Mac text focus.
+    private var lastAutoSoft = false
+    /// Whether the next `became(automatic: false)` completes an automatic soft-keyboard take.
+    private var pendingAutoSoft = false
+    /// Whether this policy just asked UIKit to resign (`.letGo`), so `resigned()` knows not to
+    /// treat our own dismissal as a manual dismissal by the person.
+    private var lettingGo = false
+    /// The person manually dismissed the soft keyboard during the current editable focus: do not
+    /// auto-show it again until focus leaves and enters again, or the person opens it manually.
+    private(set) var softDismissed = false
 
     init(attached: Bool = false) {
         self.attached = attached
@@ -75,11 +91,34 @@ struct HardwareKeyboardPolicy: Equatable {
     /// nothing open that takes the keyboard.
     var wantsAutomatic: Bool { onScreen && attached && takers.isEmpty }
 
-    /// The person's own keyboard is up: the Keyboard button lights, the tour counts it.
+    /// The software keyboard should be shown automatically for Mac text focus: a session's input view
+    /// in a window, no hardware keyboard attached, no local taker open, editable focus on the Mac,
+    /// and the person has not manually dismissed it during this focus.
+    var wantsSoftAutomatic: Bool { onScreen && !attached && takers.isEmpty && textFocus && !softDismissed }
+
+    /// The software keyboard is up (opened manually by the person or automatically for Mac text
+    /// focus): the Keyboard button lights, the tour counts it.
     var isOwn: Bool { hold == .own }
+
+    /// The person opened the keyboard themselves (not automatically for Mac text focus): panels that
+    /// temporarily take the keyboard down restore this one when they close.
+    var isManualOwn: Bool { hold == .own && !autoSoft }
 
     /// Take it for the hardware keyboard when wanted and nobody holds it.
     private var takeIfWanted: [Action] { hold == .none && wantsAutomatic ? [.take(automatic: true)] : [] }
+
+    /// Take it for the software keyboard automatically when Mac text focus wants it and nobody holds it.
+    private mutating func takeSoftIfWanted() -> [Action] {
+        guard hold == .none && wantsSoftAutomatic else { return [] }
+        pendingAutoSoft = true
+        return [.take(automatic: false)]
+    }
+
+    /// Ask UIKit to resign, marking that the resignation came from this policy rather than the person.
+    private mutating func releaseHold() -> [Action] {
+        lettingGo = true
+        return [.letGo]
+    }
 
     // MARK: Events
 
@@ -90,49 +129,109 @@ struct HardwareKeyboardPolicy: Equatable {
         onScreen = true
         hold = .none
         lastHeld = .none
-        return takeIfWanted
+        autoSoft = false
+        lastAutoSoft = false
+        pendingAutoSoft = false
+        lettingGo = false
+        let actions = takeIfWanted
+        return actions.isEmpty ? takeSoftIfWanted() : actions
     }
 
     /// The current input view left its window (UIKit takes its first responder with it).
     mutating func left() {
         onScreen = false
         hold = .none
+        autoSoft = false
+        pendingAutoSoft = false
+        lettingGo = false
     }
 
     /// A hardware keyboard attached or the last one went. Only a change acts: an attach takes the
-    /// keyboard if wanted; a detach lets the hardware keyboard's hold go (the person's own stays: they
-    /// asked for the keyboard, and iPadOS now shows its software one).
+    /// keyboard if wanted (or switches an automatically shown soft keyboard to the invisible hardware
+    /// hold); a detach lets the hardware keyboard's hold go, or hands it over to the automatic soft
+    /// keyboard if a Mac text field has focus (the person's own stays: they asked for the keyboard).
     mutating func keyboard(attached now: Bool) -> [Action] {
         guard now != attached else { return [] }
         attached = now
-        if now { return takeIfWanted }
-        return hold == .automatic ? [.letGo] : []
+        if now {
+            if hold == .own && autoSoft && wantsAutomatic {
+                autoSoft = false
+                hold = .automatic
+                return [.makeAutomatic]
+            }
+            return takeIfWanted
+        }
+        if hold == .automatic {
+            if wantsSoftAutomatic {
+                autoSoft = true
+                hold = .own
+                return [.makeOwn]
+            }
+            return releaseHold()
+        }
+        return []
     }
 
-    /// What is open changed. Something open: the hardware keyboard's hold lets go (the person's own
-    /// stays, as before: the Settings panel, the tour and the pairing overlay take it down themselves,
-    /// the drawer and the Menus pull-down never did). The last one closed: taken for the hardware
-    /// keyboard if wanted, unless the person's own came back first.
+    /// What is open changed. Something open: the hardware keyboard's hold and any automatically shown
+    /// soft keyboard let go (the person's manually opened keyboard stays, as before: the Settings
+    /// panel, the tour and the pairing overlay take it down themselves, the drawer and the Menus
+    /// pull-down never did). The last one closed: taken for the hardware keyboard or automatic Mac
+    /// text focus if wanted, unless the person's own came back first.
     mutating func takers(_ now: Set<Taker>) -> [Action] {
         let was = takers
         takers = now
-        if !now.isEmpty { return hold == .automatic ? [.letGo] : [] }
-        return was.isEmpty ? [] : takeIfWanted
+        if !now.isEmpty {
+            if hold == .automatic { return releaseHold() }
+            if hold == .own && autoSoft {
+                autoSoft = false
+                return releaseHold()
+            }
+            return []
+        }
+        guard !was.isEmpty else { return [] }
+        let actions = takeIfWanted
+        return actions.isEmpty ? takeSoftIfWanted() : actions
+    }
+
+    /// The streamed Mac's focused UI element became editable or stopped being editable (kind 48).
+    /// Only a transition acts: entering editable focus clears any prior dismiss override and opens
+    /// the soft keyboard when no hardware keyboard is attached and no local taker is open; leaving
+    /// editable focus clears any dismiss override and dismisses an automatically opened soft keyboard
+    /// while leaving a manually opened one alone.
+    mutating func textFocus(editable now: Bool) -> [Action] {
+        guard now != textFocus else { return [] }
+        textFocus = now
+        softDismissed = false
+        if now { return takeSoftIfWanted() }
+        if hold == .own && autoSoft {
+            autoSoft = false
+            return releaseHold()
+        }
+        return []
     }
 
     /// The Keyboard button (and the portrait key row's keyboard cap). Nobody holds it: the person's
     /// own (the software keyboard; with a hardware keyboard attached, iPadOS's own small bar), while a
     /// view is in a window (between a rotation's two views, nothing). The hardware keyboard holds it:
-    /// now the person's. The person holds it: down, and back to the hardware keyboard at once when it
-    /// is wanted, so the software keyboard goes and keys still reach the Mac.
+    /// now the person's. The person holds it: down (remembered as a manual dismiss while the current
+    /// Mac text focus lasts), and back to the hardware keyboard at once when it is wanted, so the
+    /// software keyboard goes and keys still reach the Mac.
     mutating func toggled() -> [Action] {
         switch hold {
-        case .none: return onScreen ? [.take(automatic: false)] : []
+        case .none:
+            guard onScreen else { return [] }
+            softDismissed = false
+            pendingAutoSoft = false
+            return [.take(automatic: false)]
         case .automatic:
+            softDismissed = false
+            autoSoft = false
             hold = .own
             return [.makeOwn]
         case .own:
-            guard wantsAutomatic else { return [.letGo] }
+            autoSoft = false
+            if textFocus { softDismissed = true }
+            guard wantsAutomatic else { return releaseHold() }
             hold = .automatic
             return [.makeAutomatic]
         }
@@ -143,13 +242,25 @@ struct HardwareKeyboardPolicy: Equatable {
     /// `-SillKeyboard 1`), while a view is in a window. False: whoever holds it lets go (the Settings
     /// panel, the tour and the pairing overlay opening).
     mutating func shown(_ show: Bool) -> [Action] {
-        guard show else { return hold == .none ? [] : [.letGo] }
+        guard show else {
+            autoSoft = false
+            pendingAutoSoft = false
+            return hold == .none ? [] : releaseHold()
+        }
         switch hold {
-        case .none: return onScreen ? [.take(automatic: false)] : []
+        case .none:
+            guard onScreen else { return [] }
+            softDismissed = false
+            pendingAutoSoft = false
+            return [.take(automatic: false)]
         case .automatic:
+            softDismissed = false
+            autoSoft = false
             hold = .own
             return [.makeOwn]
-        case .own: return []
+        case .own:
+            autoSoft = false
+            return []
         }
     }
 
@@ -162,22 +273,44 @@ struct HardwareKeyboardPolicy: Equatable {
     }
 
     /// The current view became first responder. `automatic`: what was asked (`take`); nil when UIKit
-    /// did it by itself, which counts as `unpromptedKind`. A hardware keyboard's hold that is not
-    /// wanted any more lets go at once.
+    /// did it by itself, which counts as `unpromptedKind`. A hardware keyboard's hold or automatic
+    /// soft hold that is not wanted any more lets go at once.
     mutating func became(automatic: Bool?) -> [Action] {
+        let wasPendingAutoSoft = pendingAutoSoft
+        pendingAutoSoft = false
+        lettingGo = false
         if let automatic {
             hold = automatic ? .automatic : .own
+            autoSoft = !automatic && wasPendingAutoSoft
         } else {
             hold = unpromptedKind
+            autoSoft = hold == .own && lastAutoSoft
         }
-        return hold == .automatic && !wantsAutomatic ? [.letGo] : []
+        if hold == .automatic && !wantsAutomatic { return releaseHold() }
+        if hold == .own && autoSoft && !wantsSoftAutomatic {
+            autoSoft = false
+            return releaseHold()
+        }
+        return []
     }
 
-    /// The current view resigned: let go of here, or another responder took the keyboard (a text field
-    /// this rule does not know). Not fought: the next moment above takes it back.
+    /// The current view resigned: let go of here, or another responder (or the iPadOS keyboard's own
+    /// dismiss key) took the keyboard. Not fought: the next moment above takes it back. An external
+    /// dismissal while editable Mac text focus is active and no local taker is open counts as a manual
+    /// dismiss override for this focus.
     mutating func resigned() {
-        if hold != .none { lastHeld = hold }
+        let external = !lettingGo
+        lettingGo = false
+        if external && hold == .own && textFocus && takers.isEmpty && !attached {
+            softDismissed = true
+        }
+        if hold != .none {
+            lastHeld = hold
+            lastAutoSoft = autoSoft
+        }
         hold = .none
+        autoSoft = false
+        pendingAutoSoft = false
     }
 }
 

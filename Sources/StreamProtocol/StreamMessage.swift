@@ -99,6 +99,11 @@ public enum StreamMessageKind: UInt8 {
                              // whose window list says `desktopDisplays` 2 or more; ignored unless the Desktop
                              // streams, refused while the Mac is locked. A person at the device (DisplayWake).
                              // `{"number": n}` is kept for PR #296's list
+    // Text focus on the Mac (TextFocus.swift), after 47 (nextDisplay). Older devices map it to `.unknown`
+    // and skip it.
+    case textFocus = 48      // host → device: JSON TextFocus — whether the streamed Mac app's focused UI
+                             // element is an editable text field (and whether it is secure). Sent on debounced
+                             // transitions while a source streams, and on connect when known
     case unknown = 255       // never sent: what parseHeader yields for a kind this build does not know
 }
 

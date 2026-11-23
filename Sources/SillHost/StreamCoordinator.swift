@@ -197,6 +197,7 @@ package final class StreamCoordinator {
             cursorShapes.running = active != .none && lockAllowed.pointer
             pointer.setGeometry(pointerGeometry(), fps: fps)   // also on a restart of the same source
             menuTargetChanged()                     // the menus' app follows the source (only for devices that asked)
+            textFocusFollow()                       // focused text field follows the source
             audioFollow()                           // and the sound (the same app keeps its stream)
         }
     }
@@ -297,6 +298,9 @@ package final class StreamCoordinator {
     private var deselectWhenSettled = false
     /// The Mac's cursor shape, streamed to the clients that draw the pointer themselves.
     let cursorShapes = CursorShapeWatcher()
+    /// The streamed app's focused text field (kind 48), so an iOS client without a hardware
+    /// keyboard can show or dismiss its software keyboard automatically.
+    let textFocus: TextFocusWatcher
     private let macName = Host.current().localizedName ?? "Mac"
     /// In every window list (`WindowList.launchID`): a device moving its session from AWDL to the
     /// network checks that the new connection reaches this same running host, since the Bonjour
@@ -463,6 +467,7 @@ package final class StreamCoordinator {
         displayWake = DisplayWake(testHost: synthetic)     // nor declares user activity (issue #134)
         testHotKeys = synthetic ? Self.testHotKeyTable() : nil
         menus = MenuMirror(server: server)
+        textFocus = TextFocusWatcher(appKitLoop: appKitLoop) { Self.activePID(trustAppKit: appKitLoop) }
         let launch = UUID().uuidString
         launchID = launch
         // A synthetic host shares a pasteboard of its own, never this Mac's clipboard.
@@ -683,6 +688,10 @@ package final class StreamCoordinator {
         cursorShapes.onChange = { [weak self] blob in
             self?.server.broadcast(StreamMessage(kind: .cursorShape, timestamp: Date().timeIntervalSince1970,
                                                  isKeyframe: false, payload: blob))
+        }
+        textFocus.onChange = { [weak self] focus in
+            self?.server.broadcast(StreamMessage(kind: .textFocus, timestamp: Date().timeIntervalSince1970,
+                                                 isKeyframe: false, payload: Wire.encode(focus)))
         }
         catalog.onInstalledAppsReady = { [weak self] apps in
             guard let self else { return }
@@ -2882,6 +2891,33 @@ package final class StreamCoordinator {
         menus.setTarget(menuTarget())
     }
 
+    /// Points `textFocus` at the streamed source's app (or the frontmost app on the Desktop).
+    private func textFocusFollow() {
+        guard !synthetic else { textFocus.stop(); return }
+        switch active {
+        case .none:
+            textFocus.stop()
+        case .window(let id):
+            let pid: pid_t?
+            if virtualDisplay, let p = stage.placement, p.windowID == id {
+                pid = p.pid
+            } else if let app = catalog.window(id: id)?.owningApplication {
+                pid = app.processID
+            } else if let s = streamedPID, s.window == id {
+                pid = s.pid
+            } else {
+                pid = nil
+            }
+            if let pid, pid != WindowCatalog.ownPID {
+                textFocus.watch(mode: .app(pid))
+            } else {
+                textFocus.watch(mode: .none)
+            }
+        case .desktop:
+            textFocus.watch(mode: .desktop)
+        }
+    }
+
     /// Every catalog poll (2 s) while a device is connected: the menus, and a window streaming in
     /// regular mode that moved onto a display of another scale. That keeps its size in points, so the
     /// list does not change and `windowsChanged` never hears of it, and its capture would go on at the
@@ -2890,6 +2926,7 @@ package final class StreamCoordinator {
     /// before a fit landed can still give at its old value; a resize is `windowsChanged`'s.
     private func catalogPolled() {
         menusPolled()
+        if active == .desktop, !appKitLoop { textFocus.frontmostMayHaveChanged() }
         if !switching, !shuttingDown, case .window(let id) = active, catalog.tabSwaps[id] != nil {
             Task { @MainActor in _ = await self.followTabSwap(for: id) }
             return
@@ -3670,6 +3707,7 @@ package final class StreamCoordinator {
         // This host repeats a device's held key (KeyRepeat), so a device sends it a hardware keyboard's
         // characters as keys.
         list.keyRepeat = KeyRepeat.generation
+        list.textFocus = TextFocus.generation
         // The Desktop's stops (DesktopDisplays), with two or more: a device's button reads "Desktop 2" and
         // steps with kind 47, and VoiceOver names the stop. None from a synthetic host, whose Desktop is the
         // test pattern, but under SILL_TEST_DISPLAYS; none while locked or off console (LockPolicy.list).
@@ -3731,6 +3769,10 @@ package final class StreamCoordinator {
         // The cursor's shape says what is under it: none while locked (the gate withholds it too).
         if lockAllowed.pointer, let shape = cursorShapes.current {
             server.send(StreamMessage(kind: .cursorShape, timestamp: now, isKeyframe: false, payload: shape), to: connection)
+        }
+        if let focus = textFocus.current {
+            server.send(StreamMessage(kind: .textFocus, timestamp: now, isKeyframe: false,
+                                      payload: Wire.encode(focus)), to: connection)
         }
     }
 

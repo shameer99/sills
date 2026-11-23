@@ -407,6 +407,9 @@ struct StreamScreen: View {
                 .onChange(of: clipboardChipOnScreen, initial: true) { _, onScreen in
                     client.clipboardChipShown(onScreen)
                 }
+                .onChange(of: client.textFocus, initial: true) { _, focus in
+                    overlay.update(textFocus: focus?.isEditable ?? false, secure: focus?.isSecure ?? false)
+                }
                 // The swipe in from the left bezel, while it drags: the interface as it will be, coming in
                 // with the finger over the hidden picture, which shows through its picture's pane.
                 if hidden, let progress = reveal {
@@ -1074,7 +1077,7 @@ struct StreamScreen: View {
             withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
             windowMenu = nil
             scaleOpen = false
-            keyboardBeforeSettings = keyboardShown
+            keyboardBeforeSettings = overlay.isManualKeyboardShown
             overlay.setKeyboard(shown: false)
         }
         let motion: Animation = open && !reduceMotion ? .spring(duration: 0.25, bounce: 0.15) : .easeOut(duration: 0.18)
@@ -1628,7 +1631,7 @@ struct StreamScreen: View {
         if let layout = tourLayout { client.tourSession.offered.insert(layout) }
         client.tourSession.decided = true
         client.tourSession.running = true
-        let keyboard = keyboardAfter ?? keyboardShown
+        let keyboard = keyboardAfter ?? overlay.isManualKeyboardShown
         putAwayForOverlay()
         tourKeyboardAfter = keyboard
         withAnimation(.easeOut(duration: 0.25)) { tour = run }
