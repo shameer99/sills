@@ -605,17 +605,46 @@ do {
     check("trackpad: last lift ends stroke, keeps 2.5× and keeps .trackpad surface",
           r.stroke.owner == .none && r.stroke.surface == .trackpad && near(r.zoom.scale, 2.5))
 
-    // Next stroke on the SAME Stroke instance while zoomed at 2.5×: two-finger parallel scroll must work!
+    // Next stroke on the SAME Stroke instance while zoomed at 2.5×: two-finger parallel drag pans the zoomed picture.
     r.panBegun = false; r.scrolling = false
     r.down(10, 150, 200); r.down(11, 230, 200)
-    check("trackpad: two fingers down while zoomed stay undecided (not immediately zoom)",
-          r.stroke.owner == .undecided)
-    for k in 1...3 { r.moves([10: (150, 200 - CGFloat(k) * 4), 11: (230, 200 - CGFloat(k) * 4)]) }
-    r.pan()
-    for k in 4...20 { r.moves([10: (150 - CGFloat(k) * 0.5, 200 - CGFloat(k) * 4), 11: (230 + CGFloat(k) * 0.5, 200 - CGFloat(k) * 4)]) }
-    check("trackpad: two-finger scroll while zoomed (even drifting apart) scrolls the Mac and keeps 2.5×",
-          r.scrolling && r.stroke.owner == .mac && near(r.zoom.scale, 2.5))
+    check("trackpad: two fingers down while zoomed own the picture at once",
+          r.stroke.owner == .picture && !r.stroke.scrollsMac)
+    for k in 1...10 {
+        r.moves([10: (150 + CGFloat(k) * 4, 200 - CGFloat(k) * 3), 11: (230 + CGFloat(k) * 4, 200 - CGFloat(k) * 3)])
+        if k == 3 { r.pan() }
+    }
+    check("trackpad: two-finger parallel drag while zoomed moves offset by the drag and does not scroll the Mac",
+          !r.scrolling && r.stroke.owner == .picture && near(r.zoom.scale, 2.5)
+          && near(r.zoom.offset.width, 40) && near(r.zoom.offset.height, -30))
+    // Pan clamps at ±size·(scale − 1)/2 on both axes (300, 225 at 2.5× in 400×300).
+    r.moves([10: (190 + 500, 170 - 500), 11: (270 + 500, 170 - 500)])
+    check("trackpad: pan while zoomed clamps at (+maxX, -maxY)",
+          near(r.zoom.offset.width, 300) && near(r.zoom.offset.height, -225) && covers(r.zoom, pane))
+    r.moves([10: (690 - 1000, -330 + 1000), 11: (770 - 1000, -330 + 1000)])
+    check("trackpad: pan while zoomed clamps at (-maxX, +maxY)",
+          near(r.zoom.offset.width, -300) && near(r.zoom.offset.height, 225) && covers(r.zoom, pane))
     r.up(10); r.up(11)
+
+    // At 1×, a parallel two-finger drag on trackpad still goes to the Mac (even if fingers drift apart after panBegan).
+    var scroll1x = Rig(Z(pane), size: pane, surface: .trackpad)
+    scroll1x.down(0, 150, 200); scroll1x.down(1, 230, 200)
+    for k in 1...3 { scroll1x.moves([0: (150, 200 - CGFloat(k) * 4), 1: (230, 200 - CGFloat(k) * 4)]) }
+    scroll1x.pan()
+    for k in 4...20 { scroll1x.moves([0: (150 - CGFloat(k) * 0.5, 200 - CGFloat(k) * 4), 1: (230 + CGFloat(k) * 0.5, 200 - CGFloat(k) * 4)]) }
+    check("trackpad: at 1× a parallel two-finger drag (even drifting apart) scrolls the Mac and leaves zoom unchanged",
+          scroll1x.scrolling && scroll1x.stroke.owner == .mac && scroll1x.zoom == Z(pane))
+    scroll1x.up(0); scroll1x.up(1)
+
+    // Pinch and pan simultaneously in one stroke while zoomed: changes both scale and offset.
+    var combo = Rig(zoomed(2, at: center, in: pane), size: pane, surface: .trackpad)
+    combo.down(0, 150, 200); combo.down(1, 250, 200)   // spacing 100, mid (200, 200)
+    combo.moves([0: (150, 170), 1: (300, 170)])        // spacing 150 (3×), mid (225, 170) (+25, -30)
+    combo.pan()
+    check("trackpad: pinch and pan in one stroke changes both scale and offset without scrolling the Mac",
+          combo.stroke.owner == .picture && !combo.scrolling
+          && near(combo.zoom.scale, 3) && near(combo.zoom.offset.width, 25) && near(combo.zoom.offset.height, -30))
+    combo.up(0); combo.up(1)
 
     // Pinching out while zoomed and panned off-centre: keeps the picture point at the pane's middle.
     let zOff = zoomed(2, at: CGPoint(x: 150, y: 120), in: pane)   // offset (50, 30)
@@ -626,32 +655,32 @@ do {
     check("trackpad: pinch in while zoomed zooms out to 1.5×", s.stroke.owner == .picture && near(s.zoom.scale, 1.5))
     check("trackpad: off-centre zoomed picture stays centred on its middle point",
           near(s.zoom.unzoomedPoint(center, in: pane), midBefore))
-    // One-finger-anchored pinch on trackpad: midpoint moves too, but picture still scales about pane middle.
+    // One-finger-anchored pinch on trackpad all the way out resets to 1× centred.
     s.move(1, 125, 260)   // 60 apart: 1.5 × 60 / 90 = 1.0×
     check("trackpad: pinching all the way out resets to 1× centred", s.zoom.scale == 1 && s.zoom.offset == .zero)
     s.up(0); s.up(1)
 
-    // One-finger-anchored spread from 1×: midpoint moves, spacing moves twice as much -> zoom with zero offset.
+    // One-finger-anchored spread from 1×: midpoint moves too, so it zooms to 2× and pans by the midpoint delta.
     var a = Rig(Z(pane), size: pane, surface: .trackpad)
     a.down(0, 200, 250); a.down(1, 200, 190)   // 60 apart
     a.move(1, 200, 180)   // spacing 10, travel 5
     a.pan()
     check("trackpad: one-finger-anchored spread with panBegan (spacing 10 > travel 5) becomes zoom",
           a.stroke.owner == .picture && !a.scrolling)
-    a.move(1, 200, 130)   // 120 apart: 2×
-    check("trackpad: one-finger-anchored spread to 2× keeps zero offset (no midpoint drift)",
-          near(a.zoom.scale, 2) && near(a.zoom.offset.width, 0) && near(a.zoom.offset.height, 0))
+    a.move(1, 200, 130)   // 120 apart: 2×, midpoint moved (0, -30)
+    check("trackpad: one-finger-anchored spread to 2× scales and pans by midpoint delta (0, -30)",
+          near(a.zoom.scale, 2) && near(a.zoom.offset.width, 0) && near(a.zoom.offset.height, -30))
     a.move(1, 200, -100)  // 350 apart: capped at 5×
     check("trackpad: spread caps at 5×", a.zoom.scale == Z.maxScale)
     a.up(0); a.up(1)
 
-    // Tie at panBegan while zoomed: Mac scroll wins.
-    var tie = Rig(zOff, size: pane, surface: .trackpad)
+    // Tie at panBegan at 1×: Mac scroll wins.
+    var tie = Rig(Z(pane), size: pane, surface: .trackpad)
     tie.down(0, 100, 200); tie.down(1, 200, 200)
     tie.moves([0: (105, 200), 1: (215, 200)])   // spacing 10, travel 10
     tie.pan()
-    check("trackpad: tie (spacing 10 == travel 10) while zoomed goes to Mac scroll",
-          tie.stroke.owner == .mac && tie.scrolling && tie.zoom == zOff)
+    check("trackpad: tie (spacing 10 == travel 10) at 1× goes to Mac scroll",
+          tie.stroke.owner == .mac && tie.scrolling && tie.zoom == Z(pane))
 
     // Three fingers on trackpad silence and revert any zoom the first two made.
     var g = Rig(zOff, size: pane, surface: .trackpad)
@@ -680,9 +709,9 @@ do {
     empty.moves([0: (70, 200), 1: (230, 200)])
     check("trackpad: empty pane takes stroke without zooming", empty.stroke.owner == .picture && empty.zoom == Z())
 
-    // 5,000 random trackpad strokes: two fingers in parallel never zoom even while zoomed.
+    // 5,000 random trackpad strokes: two fingers in parallel at 1× never zoom; while zoomed they pan without scrolling the Mac.
     var rng = SystemRandomNumberGenerator()
-    var t1 = true, t2 = true, t3 = true, t4 = true, t5 = true
+    var t1 = true, t2 = true, t3 = true, t4 = true, t5 = true, t6 = true
     for _ in 0..<5_000 {
         let start: Z = Bool.random(using: &rng) ? Z(pane)
             : zoomed(.random(in: 1.1...5, using: &rng), at: CGPoint(x: .random(in: 0...pane.width, using: &rng), y: .random(in: 0...pane.height, using: &rng)), in: pane)
@@ -717,14 +746,16 @@ do {
         }
         if r.scrolling && r.zoom != start { t2 = false }
         if fingers == 3 && r.zoom != start { t3 = false }
-        if fingers == 2 && parallel && (owners.contains(.picture) || r.zoom != start) { t4 = false }
+        if fingers == 2 && parallel && !start.isZoomed && (owners.contains(.picture) || r.zoom != start) { t4 = false }
+        if fingers == 2 && parallel && start.isZoomed && (r.scrolling || !near(r.zoom.scale, start.scale)) { t6 = false }
         for i in 0..<fingers { r.up(i) }
         if r.stroke.owner != .none || r.stroke.surface != .trackpad { t5 = false }
     }
     check("5,000 random trackpad strokes: 1× to 5×, picture covers its pane", t1)
     check("5,000 random trackpad strokes: a stroke that scrolled the Mac never zooms", t2)
     check("5,000 random trackpad strokes: three fingers leave zoom as they found it", t3)
-    check("5,000 random trackpad strokes: two fingers in parallel never zoom (at 1× or while zoomed)", t4)
+    check("5,000 random trackpad strokes: two fingers in parallel at 1× never zoom", t4)
+    check("5,000 random trackpad strokes: two fingers in parallel while zoomed pan without scrolling the Mac or changing scale", t6)
     check("5,000 random trackpad strokes: lift resets owner and keeps .trackpad surface", t5)
 }
 

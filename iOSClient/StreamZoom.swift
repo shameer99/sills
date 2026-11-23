@@ -3,10 +3,12 @@ import Foundation
 
 /// Pinch to zoom on the stream picture (issue #65; Noah's decisions of 2026-10-19 and 2026-10-20): two
 /// fingers on the picture zoom it from 1× to 5×, centred on the pinch (the midpoint between the
-/// fingers) as a photo in Photos is, and move it with that midpoint; no slider, and the Mac's pointer
-/// is not involved (no zoom about the cursor, no view following it). A slight pinch out leaves the
-/// picture where it is; only a pinch all the way out gives back the whole picture. The zoom is this
-/// device's alone: nothing is sent, and the Mac's window and the viewport stay as they are.
+/// fingers) as a photo in Photos is, and move it with that midpoint; on the portrait trackpad they
+/// scale about the pane's middle and move the zoomed picture by their midpoint's travel. No slider,
+/// and the Mac's pointer is not involved (no zoom about the cursor, no view following it). A slight
+/// pinch out leaves the picture where it is; only a pinch all the way out gives back the whole
+/// picture. The zoom is this device's alone: nothing is sent, and the Mac's window and the viewport
+/// stay as they are.
 ///
 /// The picture is drawn scaled about the pane's middle, then moved by `offset` (`ZoomedStreamView`:
 /// `.scaleEffect(scale).offset(offset)` on the stream's view), so a point `u` of the pane as it is at
@@ -16,7 +18,7 @@ import Foundation
 /// scroll's movement through `unzoomedDelta`, so a tap, a click, the Pencil, a hover and a scroll land
 /// on the pixel shown under the finger, and the content under a scrolling finger moves with it.
 ///
-/// Who a stroke on the picture belongs to, the Mac or the picture, is `Stroke`'s.
+/// Who a stroke on the picture or the portrait trackpad belongs to, the Mac or the picture, is `Stroke`'s.
 /// Pure: CoreGraphics and Foundation (Tests/checks/stream-zoom).
 struct StreamZoom: Equatable, Sendable {
     static let minScale: CGFloat = 1
@@ -128,29 +130,28 @@ extension StreamZoom {
     /// picture; pointer motion on the trackpad), as before the zoom. Two fingers at 1× are the Mac's
     /// scroll, as before, unless they pinch first: their spacing changes more than their midpoint moves
     /// (`pinchTravel`, before the finger pan begins; when it begins, `panBegan`), and then they are the
-    /// picture's. On a zoomed picture (`.picture`), any two fingers are the picture's, as in Photos:
-    /// they pinch it and move it, and one finger still scrolls the Mac. On the portrait trackpad
-    /// (`.trackpad`), one finger moves the pointer and two fingers are the only way to scroll, so two
-    /// fingers while zoomed still scroll the Mac unless they pinch first, and a pinch zooms about the
-    /// picture pane's middle. Three fingers are the Mac's gesture (TrackpadGestures, `silenced`), and
-    /// the picture goes back to how the stroke found it. Once decided, a stroke keeps its owner until
-    /// its last finger lifts, so a scroll never turns into a zoom halfway, and a pinch's fingers never
-    /// scroll the Mac when one of them lifts.
+    /// picture's. While zoomed, any two fingers on either surface (`.picture` or `.trackpad`) are the
+    /// picture's at once, as in Photos: they pinch it and pan it together, while one finger stays the
+    /// Mac's (scrolling on the picture, moving the pointer on the trackpad). Three fingers are the
+    /// Mac's gesture (TrackpadGestures, `silenced`), and the picture goes back to how the stroke found
+    /// it. Once decided, a stroke keeps its owner until its last finger lifts, so a scroll never turns
+    /// into a zoom halfway, and a pinch's fingers never scroll the Mac when one of them lifts.
     ///
     /// Fed every direct touch on the surface by its stroke observer (each touch's id as it landed; a
     /// touch event's moves together, so one event is one step); told when the finger pan begins and
     /// when three fingers take the stroke. While the picture owns the stroke, the first two fingers
     /// down drive it: the factor is their spacing now over their spacing at the last step, and from
     /// the moment they pinch it catches up from where they landed (on the picture, keeping the point
-    /// under their midpoint under it; on the trackpad, about the picture pane's middle).
+    /// under their midpoint under it; on the trackpad, scaling about the picture pane's middle and
+    /// translating by their midpoint's travel since the last step).
     struct Stroke: Equatable, Sendable {
         enum Surface: Equatable, Sendable {
             /// Direct touches on the picture: two fingers on a zoomed picture always own it (pan and
             /// zoom), and a pinch anchors on the fingers' midpoint.
             case picture
-            /// Touches on the portrait trackpad: two fingers scroll the Mac even while zoomed unless
-            /// their spacing changes more than their midpoint moves, and a pinch zooms about the
-            /// picture pane's middle.
+            /// Touches on the portrait trackpad: at 1× two fingers scroll the Mac unless they pinch
+            /// first; while zoomed two fingers always own the picture, scaling about the pane's middle
+            /// and panning by their midpoint's travel.
             case trackpad
         }
 
@@ -199,9 +200,9 @@ extension StreamZoom {
         /// Fingers down now.
         var fingers: Int { at.count }
 
-        /// A finger lands at `point`. Two fingers down make the pair; on a zoomed picture (`.picture`)
-        /// they are the picture's at once, and so are two down again after one of a picture's pair
-        /// lifted.
+        /// A finger lands at `point`. Two fingers down make the pair; while the picture is zoomed they
+        /// are the picture's at once on both surfaces, and so are two down again after one of a
+        /// picture's pair lifted.
         mutating func down(_ id: Int, at point: CGPoint, zoom: StreamZoom) {
             if owner == .none {
                 owner = .undecided
@@ -210,12 +211,13 @@ extension StreamZoom {
             at[id] = point
             guard owner == .undecided || owner == .picture, pair.count < 2, at.count == 2 else { return }
             formPair()
-            if surface == .picture, owner == .undecided, zoom.isZoomed { owner = .picture }
+            if owner == .undecided, zoom.isZoomed { owner = .picture }
         }
 
         /// Fingers move, one touch event's together (each id to where it is now): while the picture owns
-        /// the stroke, its pair's move is one step of the pinch in a pane of `size`. True when the zoom
-        /// changed.
+        /// the stroke, its pair's move is one step of the pinch in a pane of `size` (on `.picture`,
+        /// anchored on their midpoint; on `.trackpad`, scaled about the pane's middle and translated by
+        /// their midpoint's delta since the last step). True when the zoom changed.
         @discardableResult
         mutating func moved(_ moves: [Int: CGPoint], zoom: inout StreamZoom, in size: CGSize) -> Bool {
             var seen = false
@@ -241,7 +243,10 @@ extension StreamZoom {
                 zoom.pinch(factor: now / was, from: Self.midpoint(last[0], last[1]), to: Self.midpoint(a, b), in: size)
             case .trackpad:
                 let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                zoom.pinch(factor: now / was, from: center, to: center, in: size)
+                let wasMid = Self.midpoint(last[0], last[1])
+                let nowMid = Self.midpoint(a, b)
+                let to = CGPoint(x: center.x + (nowMid.x - wasMid.x), y: center.y + (nowMid.y - wasMid.y))
+                zoom.pinch(factor: now / was, from: center, to: to, in: size)
             }
             made = zoom
             return zoom != before
