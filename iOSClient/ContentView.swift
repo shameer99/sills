@@ -1956,10 +1956,15 @@ struct ConnectScreen: View {
 /// a tap and a scroll pass by), which puts the words shown on the clipboard for a bug report;
 /// VoiceOver has it as an action. It wraps rather than truncate, on a screen too narrow for it.
 ///
-/// A tap opens the changelog (ChangelogView, from Changelog.releases).
+/// A tap opens the changelog (ChangelogView, from Changelog.releases). DEBUG: `-SillShowChangelog 1` opens it at
+/// once, for the harness's photo.
 struct VersionLine: View {
     let label: VersionLabel
+    #if DEBUG
+    @State private var changelogShown = UserDefaults.standard.bool(forKey: "SillShowChangelog")
+    #else
     @State private var changelogShown = false
+    #endif
 
     var body: some View {
         Button { changelogShown = true } label: {
