@@ -186,9 +186,21 @@ final class HEVCDisplayView: UIView {
     /// or this device's own, whichever `StreamClient.renderPointer` says. Up to 120 times a second.
     /// Main thread.
     func setPointer(_ p: CGPoint?) {
+        let moved = p != pointer
         pointer = p
         placeCursor()
+        // A zoomed picture follows the pointer (StreamZoom.follow): only when it moved, so a restatement
+        // never undoes a two-finger pan.
+        guard moved, let p, let onPointerMoved else { return }
+        let rect = Self.videoRect(in: bounds, videoSize: pointerVideoSize)
+        guard rect.width > 0, rect.height > 0 else { return }
+        let x = min(max(p.x, 0), 1), y = min(max(p.y, 0), 1)
+        onPointerMoved(CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height), bounds.size)
     }
+
+    /// The pointer moved to a point of this view at 1× (its bounds are the picture's pane): the
+    /// picture's zoom follows it (`StreamView.follow`). Main thread.
+    var onPointerMoved: ((CGPoint, CGSize) -> Void)?
 
     #if DEBUG
     /// The layout harness (`-SillPointer`): the frame size the sprite needs, as the host's parameter
@@ -520,6 +532,8 @@ struct StreamView: UIViewRepresentable {
     let client: StreamClient
     /// The picture's zoom, which the sprite counters (`HEVCDisplayView.setZoom`).
     var zoom = StreamZoom()
+    /// The pointer moved to a point of the pane at 1× (`HEVCDisplayView.onPointerMoved`).
+    var follow: ((CGPoint, CGSize) -> Void)? = nil
 
     /// Hosts the client's single display view. SwiftUI may build the new layout's host before it
     /// dismantles the old one, so detach the view from wherever it was first.
@@ -530,6 +544,7 @@ struct StreamView: UIViewRepresentable {
         view.attachDiagnostics(to: client)
         #endif
         wirePointer(view)
+        view.onPointerMoved = follow
         view.setZoom(zoom)
         return view
     }
@@ -552,7 +567,10 @@ struct StreamView: UIViewRepresentable {
         client.renderPointer()
     }
 
-    func updateUIView(_ uiView: HEVCDisplayView, context: Context) { uiView.setZoom(zoom) }
+    func updateUIView(_ uiView: HEVCDisplayView, context: Context) {
+        uiView.onPointerMoved = follow
+        uiView.setZoom(zoom)
+    }
 }
 
 // MARK: - The picture's zoom
@@ -582,6 +600,13 @@ final class StreamZoomModel: ObservableObject {
         z.resized(to: size)
         set(z)
     }
+
+    /// The Mac's pointer moved to `point` of the pane at 1×: a zoomed picture keeps it in view.
+    func follow(_ point: CGPoint, in size: CGSize) {
+        var z = zoom
+        z.follow(point, in: size)
+        set(z)
+    }
 }
 
 /// The stream's view as the picture's zoom shows it: scaled about the pane's middle and moved
@@ -592,7 +617,7 @@ struct ZoomedStreamView: View {
     @ObservedObject var zoom: StreamZoomModel
 
     var body: some View {
-        StreamView(client: client, zoom: zoom.zoom)
+        StreamView(client: client, zoom: zoom.zoom, follow: { [zoom] p, size in zoom.follow(p, in: size) })
             .onGeometryChange(for: CGSize.self, of: { $0.size }) { zoom.paneResized(to: $0) }
             .scaleEffect(zoom.zoom.scale)
             .offset(zoom.zoom.offset)

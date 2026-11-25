@@ -28,6 +28,12 @@ MUTANTS = [
     ("Z14 another pane keeps the offset as it was (another point at the middle)", "offset.width * size.width / pane.width", "offset.width"),
     ("Z15 the visible part as big as the pane", "return CGRect(x: origin.x, y: origin.y, width: size.width / s, height: size.height / s)",
      "return CGRect(x: origin.x, y: origin.y, width: size.width, height: size.height)"),
+    # Following the pointer.
+    ("F1 follow never moves the picture", "        guard dx != 0 || dy != 0 else { return }\n", "        return\n"),
+    ("F2 follow moves the picture the wrong way across", "offset.width + dx)),", "offset.width - dx)),"),
+    ("F3 follow not kept inside the pane", "width: min(maxX, max(-maxX, offset.width + dx)),", "width: offset.width + dx,"),
+    ("F4 follow works at 1× too", "        guard isZoomed, size.width > 0, size.height > 0, point.x.isFinite", "        guard size.width > 0, size.height > 0, point.x.isFinite"),
+    ("F5 follow with no margin", "static let followMargin: CGFloat = 0.15", "static let followMargin: CGFloat = 0"),
     # The stroke.
     ("S1 two fingers on a zoomed picture not the picture's at once", "            if owner == .undecided, zoom.isZoomed { owner = .picture }\n", ""),
     ("S2 the pan's start always the Mac's (a pinch whose midpoint moved scrolls)",

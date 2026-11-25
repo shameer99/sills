@@ -5,7 +5,8 @@ import Foundation
 /// fingers on the picture zoom it from 1× to 5×, centred on the pinch (the midpoint between the
 /// fingers) as a photo in Photos is, and move it with that midpoint; on the portrait trackpad they
 /// scale about the pane's middle and move the zoomed picture by their midpoint's travel. No slider,
-/// and the Mac's pointer is not involved (no zoom about the cursor, no view following it). A slight
+/// and the Mac's pointer is not involved in the zoom itself; while zoomed, the view follows it
+/// near the pane's edges (`follow`). A slight
 /// pinch out leaves the picture where it is; only a pinch all the way out gives back the whole
 /// picture. The zoom is this device's alone: nothing is sent, and the Mac's window and the viewport
 /// stay as they are.
@@ -85,6 +86,27 @@ struct StreamZoom: Equatable, Sendable {
         let maxY = size.height * (scale - 1) / 2
         offset = CGSize(width: min(maxX, max(-maxX, offset.width * size.width / pane.width)),
                         height: min(maxY, max(-maxY, offset.height * size.height / pane.height)))
+    }
+
+    /// How near a zoomed pane's edge the Mac's pointer comes before the picture moves to keep it in
+    /// view (`follow`), as a fraction of the pane's side.
+    static let followMargin: CGFloat = 0.15
+
+    /// The Mac's pointer moved to `point` (the picture at 1×, in a pane of `size`): while zoomed, the
+    /// picture moves just far enough to show it at least `followMargin` of the pane in from each edge,
+    /// as far as the picture's edges allow. The scale stays; at 1× nothing changes.
+    mutating func follow(_ point: CGPoint, in size: CGSize) {
+        guard isZoomed, size.width > 0, size.height > 0, point.x.isFinite, point.y.isFinite else { return }
+        resized(to: size)
+        let shown = zoomedPoint(point, in: size)
+        let mx = size.width * Self.followMargin, my = size.height * Self.followMargin
+        let dx = shown.x < mx ? mx - shown.x : (shown.x > size.width - mx ? size.width - mx - shown.x : 0)
+        let dy = shown.y < my ? my - shown.y : (shown.y > size.height - my ? size.height - my - shown.y : 0)
+        guard dx != 0 || dy != 0 else { return }
+        let maxX = size.width * (scale - 1) / 2
+        let maxY = size.height * (scale - 1) / 2
+        offset = CGSize(width: min(maxX, max(-maxX, offset.width + dx)),
+                        height: min(maxY, max(-maxY, offset.height + dy)))
     }
 
     /// A point of the pane on screen, back to where it is in the picture at 1×: what the input view

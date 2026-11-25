@@ -782,5 +782,48 @@ do {
     check("5,000 random trackpad strokes: lift resets owner and keeps .trackpad surface", t5)
 }
 
+// MARK: - Following the Mac's pointer while zoomed
+
+do {
+    let pane = CGSize(width: 400, height: 300)
+    var f = Z()
+    f.follow(CGPoint(x: 5, y: 5), in: pane)
+    check("follow at 1×: nothing changes", f == Z())
+    f = zoomed(2, at: CGPoint(x: 200, y: 150), in: pane)
+    let mid = f
+    f.follow(CGPoint(x: 210, y: 140), in: pane)
+    check("follow: a pointer well inside the zoomed view leaves the picture as it is", f == mid)
+    // 2× about the middle shows x 100…300, y 75…225; the margin is 15 % (60 × 45 pt on screen).
+    f.follow(CGPoint(x: 290, y: 150), in: pane)
+    let shown = f.zoomedPoint(CGPoint(x: 290, y: 150), in: pane)
+    check("follow: a pointer near the right edge moves the picture until it is the margin in, \(str(shown))",
+          near(shown.x, pane.width * (1 - Z.followMargin)) && near(shown.y, 150) && near(f.scale, 2) && f.offset.width < 0)
+    var g = mid
+    g.follow(CGPoint(x: 20, y: 20), in: pane)
+    let gs = g.zoomedPoint(CGPoint(x: 20, y: 20), in: pane)
+    check("follow: a pointer off the view up left shows it again, \(str(gs))",
+          gs.x >= 0 && gs.x <= pane.width && gs.y >= 0 && gs.y <= pane.height && g.offset.width > 0 && g.offset.height > 0)
+    var h = mid
+    h.follow(CGPoint(x: 0, y: 0), in: pane)
+    check("follow: the corner of the picture at most to the pane's corner (covers, offset at its bound)",
+          covers(h, pane) && near(h.offset.width, pane.width / 2) && near(h.offset.height, pane.height / 2))
+    var k = mid
+    k.follow(CGPoint(x: 200, y: 240), in: pane)
+    let ks = k.zoomedPoint(CGPoint(x: 200, y: 240), in: pane)
+    check("follow: a pointer below the view moves the picture up only, \(str(ks))",
+          near(ks.y, pane.height * (1 - Z.followMargin)) && near(k.offset.width, 0) && k.offset.height < 0)
+    var all = true
+    var rng = SystemRandomNumberGenerator()
+    for _ in 0..<2_000 {
+        var r = zoomed(CGFloat.random(in: 1.1...5, using: &rng), at: CGPoint(x: CGFloat.random(in: 0...400, using: &rng), y: CGFloat.random(in: 0...300, using: &rng)), in: pane)
+        let s0 = r.scale
+        let p = CGPoint(x: CGFloat.random(in: 0...400, using: &rng), y: CGFloat.random(in: 0...300, using: &rng))
+        r.follow(p, in: pane)
+        let q = r.zoomedPoint(p, in: pane)
+        if !(near(r.scale, s0) && covers(r, pane) && q.x >= -0.001 && q.x <= pane.width + 0.001 && q.y >= -0.001 && q.y <= pane.height + 0.001) { all = false }
+    }
+    check("2,000 random follows: the scale stays, the picture covers its pane, the pointer shows", all)
+}
+
 print("\(passes) passed, \(fails) failed")
 exit(fails == 0 ? 0 : 1)
