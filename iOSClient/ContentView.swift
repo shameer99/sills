@@ -8,6 +8,8 @@ struct ContentView: View {
     /// harness's `-SillLive 1` session, which runs on this same client.
     @StateObject private var statsReporter = ClientStatsReporter()
     @Environment(\.scenePhase) private var scenePhase
+    /// How many settings a link from the sibling app just copied (SettingsTransfer), while its alert shows.
+    @State private var settingsCopied: Int?
 
     var body: some View {
         root.onAppear { statsReporter.attach(to: client) }
@@ -54,8 +56,21 @@ struct ContentView: View {
             Self.orientFromLaunchArgument()      // -SillOrientation landscape|portrait
             #endif
         }
-        // sill://pair from the Camera, Messages or `xcrun simctl openurl`: a confirmation first.
-        .onOpenURL { client.handleOpenURL($0) }
+        // sill://pair from the Camera, Messages or `xcrun simctl openurl`: a confirmation first. A settings
+        // link from the sibling app (SettingsTransfer) is taken at once and said so.
+        .onOpenURL { url in
+            if let settings = SettingsTransfer.settings(from: url) {
+                settings.forEach { UserDefaults.standard.set($0.value, forKey: $0.key) }
+                settingsCopied = settings.count
+            } else {
+                client.handleOpenURL(url)
+            }
+        }
+        .alert("Settings copied", isPresented: Binding(get: { settingsCopied != nil }, set: { if !$0 { settingsCopied = nil } })) {
+            Button("OK") {}
+        } message: {
+            Text("\(settingsCopied ?? 0) settings came from the other app. Close and reopen this app to use them all.")
+        }
     }
 
     #if DEBUG
@@ -1940,22 +1955,62 @@ struct ConnectScreen: View {
 /// element for VoiceOver, "Sill version 0.6.2, build 1400". A long press offers Copy (a context menu:
 /// a tap and a scroll pass by), which puts the words shown on the clipboard for a bug report;
 /// VoiceOver has it as an action. It wraps rather than truncate, on a screen too narrow for it.
+///
+/// A tap opens the changelog (ChangelogView, from Changelog.releases).
 struct VersionLine: View {
     let label: VersionLabel
+    @State private var changelogShown = false
 
     var body: some View {
-        Text(label.text)
-            .foregroundStyle(Palette.muted)
-            .fixedSize(horizontal: false, vertical: true)
-            .contextMenu {
-                Button("Copy", systemImage: "doc.on.doc", action: copy)
-            }
-            .accessibilityLabel(label.spoken)
-            .accessibilityAction(named: "Copy", copy)
+        Button { changelogShown = true } label: {
+            Text(label.text)
+                .foregroundStyle(Palette.muted)
+                .underline(color: Palette.muted.opacity(0.5))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Copy", systemImage: "doc.on.doc", action: copy)
+        }
+        .accessibilityLabel(label.spoken)
+        .accessibilityHint("Shows what's new")
+        .accessibilityAction(named: "Copy", copy)
+        .sheet(isPresented: $changelogShown) { ChangelogView() }
     }
 
     private func copy() {
         UIPasteboard.general.string = label.text
+    }
+}
+
+/// The changelog, newest first: each release's own changes, then what came from upstream Sill.
+struct ChangelogView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(Changelog.releases, id: \.label) { release in
+                    Section {
+                        part("Our changes", release.ours, symbol: "sparkles")
+                        part("From upstream", release.upstream, symbol: "arrow.down.circle")
+                    } header: {
+                        Text([release.label, release.date, release.title].filter { !$0.isEmpty }.joined(separator: " · "))
+                    }
+                }
+            }
+            .navigationTitle("What's New")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    @ViewBuilder private func part(_ title: String, _ items: [String], symbol: String) -> some View {
+        if !items.isEmpty {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(Palette.muted)
+            ForEach(items, id: \.self) { Label($0, systemImage: symbol) }
+        }
     }
 }
 

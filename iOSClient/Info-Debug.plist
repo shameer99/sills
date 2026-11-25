@@ -43,6 +43,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>sill</string>
+				<string>sille</string>
 			</array>
 		</dict>
 	</array>
