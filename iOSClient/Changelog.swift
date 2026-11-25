@@ -31,7 +31,7 @@ struct Changelog {
             "SillE: a separate app with its own teal icon, next to SillS, for trying the redesign.",
             "The keyboard is part of the layout: picture, one bar, trackpad, modifier keys, then the keyboard. The trackpad stays usable (at least 75 pt) with the keyboard up, in every orientation.",
             "Hold the keyboard's space bar and drag to move the Mac's pointer.",
-            "One bar: Apps, the window thumbnails, Menus, Keyboard and Settings. Desktop and text size moved out of the bar.",
+            "One bar: Apps, the window thumbnails, Menus, Keyboard and Settings. Desktop is the first row of Apps; text size (Aa) is in Settings.",
             "Landscape: a slim rail on the side instead of the top bar; with the keyboard up the picture sits on the left and a trackpad on the right.",
             "Larger Picture is gone: the new layout replaces it.",
             "Tap the version number in Settings to see this list.",
