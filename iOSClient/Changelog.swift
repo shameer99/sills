@@ -27,6 +27,10 @@ struct Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.6.3", build: "9", date: "2026-11-25", title: "SillS: the redesign", ours: [
+            "Redesign from SillE folded into SillS; SillE retired.",
+            "One app again: Copy Settings to SillE is gone. You can delete SillE.",
+        ], upstream: []),
         Release(version: "0.6.3", build: "8", date: "2026-11-25", title: "SillE: the redesign", ours: [
             "SillE: a separate app with its own teal icon, next to SillS, for trying the redesign.",
             "The keyboard is part of the layout: picture, one bar, trackpad, modifier keys, then the keyboard. The trackpad stays usable (at least 75 pt) with the keyboard up, in every orientation.",

@@ -1,25 +1,17 @@
-"""Mutants of Changelog.swift and SettingsTransfer.swift (iOSClient): each changes one in one place and must make
+"""Mutants of Changelog.swift (iOSClient): each changes one in one place and must make
 the check (main.swift) fail. usage: mutants.py"""
 import os, subprocess, sys
 SP = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(SP, "..", "..", ".."))
 OUT = os.path.join(ROOT, ".build", "checks", "changelog")
 os.makedirs(OUT, exist_ok=True)
-FILES = {"C": "iOSClient/Changelog.swift", "S": "iOSClient/SettingsTransfer.swift"}
+FILES = {"C": "iOSClient/Changelog.swift"}
 SRC = {k: open(os.path.join(ROOT, v)).read() for k, v in FILES.items()}
 MUTANTS = [
     ("C1 the label without parentheses", "C", 'var label: String { "\\(version) (\\(build))" }', 'var label: String { "\\(version) \\(build)" }'),
-    ("C2 the newest release's build behind the project's", "C", 'Release(version: "0.6.3", build: "8"', 'Release(version: "0.6.3", build: "9"'),
-    ("C3 a day written another way", "C", 'date: "2026-11-25"', 'date: "25 Nov 2026"'),
+    ("C2 the newest release's build behind the project's", "C", 'Release(version: "0.6.3", build: "9"', 'Release(version: "0.6.3", build: "10"'),
+    ("C3 a day written another way", "C", 'build: "9", date: "2026-11-25"', 'build: "9", date: "25 Nov 2026"'),
     ("C4 no upstream item anywhere", "C", '"Sill 0.6.3 from upstream main (c33d105, 2026-11-20).",\n            "Privacy: the Mac locks itself when the last device leaves (#402).",\n            "Audio: a staged window\'s sound is captured on Sill\'s display, and an ended capture retries by itself (#396).",\n            "Host: follows macOS\'s own tab switches in a streamed window (#399).",', ''),
-    ("S1 every key picked", "S", "all.filter { $0.key.hasPrefix(prefix) && ", "all.filter { "),
-    ("S2 DEBUG hooks picked (prefix without the dot)", "S", 'static let prefix = "Sill."', 'static let prefix = "Sill"'),
-    ("S3 SillE sends to itself", "S", 'bundleID.hasPrefix("me.saffer.sill.e") ? "sill" : "sille"', 'bundleID.hasPrefix("me.saffer.sill.e") ? "sille" : "sille"'),
-    ("S4 no size limit on the way out", "S", "guard encoded.utf8.count <= maxBytes else { return nil }", ""),
-    ("S5 any link taken as settings", "S", 'guard url.host?.lowercased() == "settings",', 'guard true,'),
-    ("S6 not URL-safe (+ kept)", "S", '.replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")\n            .replacingOccurrences(of: "=", with: "")', '.replacingOccurrences(of: "=", with: "")'),
-    ("S7 the keys of a link not picked again", "S", "let kept = pick(dict)", "let kept = dict"),
-    ("S8 an empty set sent", "S", "guard !settings.isEmpty,\n", "guard "),
 ]
 caught = 0
 for name, which, old, new in MUTANTS:

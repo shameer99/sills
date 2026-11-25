@@ -1,4 +1,4 @@
-# The changelog (SillE / SillS fork)
+# The changelog (SillS fork)
 
 A tap on the version line ("Sill 0.6.3 (8)") at the bottom of the Settings panel or the connect screen
 opens What's New: `ChangelogView` (iOSClient/ContentView.swift) drawing `Changelog.releases`
@@ -20,5 +20,5 @@ Each release has two lists:
    `git log --merges --format='%h %s' <last upstream commit>..upstream/main`.
 3. Lines are what a person notices, not how it was built.
 
-Settings copy between the two apps (SettingsTransfer.swift) is described in the file itself: Settings ›
-Copy Settings to SillE in a build that is not SillE opens `sille://settings?d=…` with every `Sill.` key.
+SillE (me.saffer.sill.e, builds 8) was a separate app for trying the redesign; build 9 folds it into SillS
+and drops the settings copy between the two (SettingsTransfer.swift).

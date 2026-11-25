@@ -455,7 +455,6 @@ struct HostSettingsPanel: View {
             // for a Mac without them too. Both are this device's own: its gestures, then the tour.
             thisDevice
             tour
-            copySettings
             versionLine
         }
     }
@@ -478,27 +477,6 @@ struct HostSettingsPanel: View {
     /// whatever the Mac is (while settings load, and for a Mac without them). It sends nothing. It
     /// comes after This iPad's gestures, under their footnote, so it needs no space of its own above
     /// it even while the Mac's settings load.
-    /// Copy Settings to SillE (SettingsTransfer): this app's settings, in a link SillE opens and takes. Only in
-    /// the app that is not SillE: SillE is the one being tried, and SillS takes no such link before this build.
-    @ViewBuilder private var copySettings: some View {
-        let id = Bundle.main.bundleIdentifier ?? ""
-        if !id.hasPrefix("me.saffer.sill.e"),
-           let link = SettingsTransfer.link(SettingsTransfer.pick(UserDefaults.standard.dictionaryRepresentation()),
-                                            scheme: SettingsTransfer.scheme(forSiblingOf: id)) {
-            Rows {
-                Button { UIApplication.shared.open(link) } label: {
-                    Text("Copy Settings to SillE")
-                        .foregroundStyle(Palette.accent)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .rowFrame()
-            }
-            Footnote(text: "Opens SillE with this app's settings and saved Macs. A Mac that requires pairing asks once.")
-        }
-    }
-
     @ViewBuilder private var tour: some View {
         Rows {
             Button(action: takeTour) {

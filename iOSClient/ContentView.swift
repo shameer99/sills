@@ -8,8 +8,6 @@ struct ContentView: View {
     /// harness's `-SillLive 1` session, which runs on this same client.
     @StateObject private var statsReporter = ClientStatsReporter()
     @Environment(\.scenePhase) private var scenePhase
-    /// How many settings a link from the sibling app just copied (SettingsTransfer), while its alert shows.
-    @State private var settingsCopied: Int?
 
     var body: some View {
         root.onAppear { statsReporter.attach(to: client) }
@@ -56,21 +54,8 @@ struct ContentView: View {
             Self.orientFromLaunchArgument()      // -SillOrientation landscape|portrait
             #endif
         }
-        // sill://pair from the Camera, Messages or `xcrun simctl openurl`: a confirmation first. A settings
-        // link from the sibling app (SettingsTransfer) is taken at once and said so.
-        .onOpenURL { url in
-            if let settings = SettingsTransfer.settings(from: url) {
-                settings.forEach { UserDefaults.standard.set($0.value, forKey: $0.key) }
-                settingsCopied = settings.count
-            } else {
-                client.handleOpenURL(url)
-            }
-        }
-        .alert("Settings copied", isPresented: Binding(get: { settingsCopied != nil }, set: { if !$0 { settingsCopied = nil } })) {
-            Button("OK") {}
-        } message: {
-            Text("\(settingsCopied ?? 0) settings came from the other app. Close and reopen this app to use them all.")
-        }
+        // sill://pair from the Camera, Messages or `xcrun simctl openurl`: a confirmation first.
+        .onOpenURL { client.handleOpenURL($0) }
     }
 
     #if DEBUG
