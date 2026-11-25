@@ -21,28 +21,23 @@ enum TourTopic: String, CaseIterable, Comparable {
     private var rank: Int { TourTopic.allCases.firstIndex(of: self) ?? 0 }
 }
 
-/// The layouts the tour knows: the bar over the picture (the Duo's inner and outer displays on
-/// their side, phones and iPads held sideways); the laptop layout's halves held upright (the Duo's
-/// inner display, an iPad, an iPad window narrower than 600 pt), the window bar and the keys under
-/// the picture's half; and a phone held upright (`PhonePortraitLayout`: the picture in a 16:10 pane
-/// at the top, then row 1 with Apps, Aa, Keyboard, Desktop and Settings, the thumbnails, six keys
-/// and the trackpad; the Duo's outer display upright too). A phone with Larger Picture in effect (the
-/// switch on while a window streams: no thumbnails, a taller picture) is still `.phone` to the rule,
-/// so switching it, or a switch between the Desktop and a window that brings it or takes it away, is
-/// no turn; only its bar card's targets and words differ (`thumbnails`).
+/// The layouts the tour knows: sideways (the slim leading rail beside the picture, and the trackpad
+/// and keys when the software keyboard is up), and upright (the picture at the top, one bar below it,
+/// the trackpad and the modifier row; `.portrait` for wide screens like the Duo's inner display and
+/// iPad, `.phone` for phones and the Duo's cover display).
 enum TourLayout: String, Hashable {
     case landscape, portrait, phone
 
-    /// Held upright: the halves or a phone's rows, both with the keys and the trackpad.
+    /// Held upright: picture, one bar, trackpad and key row.
     var upright: Bool { self != .landscape }
 }
 
 /// What a step lights: each reported by its view as a frame in the stream screen's space. `apps` is
-/// a phone's row 1 Apps button, lit only where the thumbnails are hidden (Larger Picture); `menus`
-/// the Menus button, which reports itself wherever it is drawn (MacMenuButton), so only while the
-/// Mac sent menus and the bar has room for it.
+/// the Apps button (lit sideways, where there is no thumbnail strip); `menus` the Menus button,
+/// reported wherever it is drawn (`MacMenuButton`), so only while the Mac sent menus and there is
+/// room for it.
 enum TourTarget: String, CaseIterable, Hashable {
-    case stream, apps, strip, menus, textSize, keyboard, settings, keys, trackpad
+    case stream, apps, strip, menus, keyboard, settings, keys, trackpad
 }
 
 /// What this device remembers (UserDefaults `Sill.tourSeen`, `Sill.tourSkipped`): the steps passed
@@ -194,8 +189,6 @@ struct TourFeatures: Equatable {
     var pasteRightAway: Bool
     /// The Mac has sound: its settings carry Send Audio, on or off.
     var sound: Bool
-    /// The Settings panel offers Larger Picture here: an iPhone without a hinge, where it is larger.
-    var largerPicture: Bool
 }
 
 struct TourCopy: Equatable {
@@ -225,20 +218,14 @@ enum TourPolicy {
         layout.upright ? [.laptop] : []
     }
 
-    /// What each step lights. Sideways and on a phone upright the Keyboard button is in the bar (a
-    /// phone's row 1, over the thumbnails); in the halves the keyboard is a cap in the key row, part
-    /// of `keys`. The Menus button is lit where it is drawn (after the strip; a phone's at the end of
-    /// row 2, under Settings); while it is not (no menus from the Mac, or no room), the rest are.
-    /// `thumbnails`: false for a phone with Larger Picture in effect (a window streaming with the
-    /// switch on: PhonePortraitLayout.largerPicture(switchOn:streaming:)), whose thumbnails are
-    /// hidden: its bar card lights Apps, Menus, Aa and Keyboard in row 1. With the Desktop streaming
-    /// the switch changes nothing, and the thumbnails show. The clipboard's and the sound's card
-    /// lights the Settings button, where their switches are.
-    static func targets(_ topic: TourTopic, _ layout: TourLayout, thumbnails: Bool = true) -> [TourTarget] {
+    /// What each step lights. Sideways the leading vertical rail carries Apps, Menus, Keyboard and
+    /// Settings (no thumbnail strip); upright the single bar below the picture carries Apps, the
+    /// thumbnails, Menus, Keyboard and Settings. The clipboard's and the sound's card lights Settings,
+    /// where their switches are.
+    static func targets(_ topic: TourTopic, _ layout: TourLayout) -> [TourTarget] {
         switch topic {
         case .touch: return [.stream]
-        case .bar where layout == .phone && !thumbnails: return [.apps, .menus, .textSize, .keyboard]
-        case .bar: return layout == .portrait ? [.strip, .menus, .textSize] : [.strip, .menus, .textSize, .keyboard]
+        case .bar: return layout == .landscape ? [.apps, .menus, .keyboard] : [.strip, .menus, .keyboard]
         case .sharing: return [.settings]
         case .settings: return [.settings]
         case .laptop: return [.keys, .trackpad]
@@ -387,13 +374,22 @@ enum TourPolicy {
     /// The card's width: 360 pt; 480 on a screen held sideways that is under 520 pt tall (a phone,
     /// the Duo's outer display), where height is what runs out; 560 at accessibility text sizes;
     /// never more than the screen less its margins, nor, across the book pose's fold, than the page
-    /// its `targets` are on (DuoPosture.pageWidth), so the card stays beside them.
+    /// its `targets` are on (DuoPosture.pageWidth), nor wider than the room beside the leading rail
+    /// sideways when that room holds a card.
     static func width(screen: CGSize, layout: TourLayout, accessibilityText: Bool, fold: FoldInfo = .inferred,
                       targets: CGRect? = nil) -> CGFloat {
         let short = layout == .landscape && screen.height < 520
         let preferred: CGFloat = accessibilityText ? 560 : (short ? 480 : 360)
         let page = DuoPosture.pageWidth(screenWidth: screen.width, margin: margin, fold: fold, for: targets) ?? .infinity
-        return max(0, min(preferred, page, screen.width - 2 * margin))
+        let besideRail: CGFloat
+        if layout == .landscape, let t = targets, !t.isNull, !t.isEmpty, t.maxX <= StreamLayout.railWidth + 16 {
+            let rightEdge = fold.verticalBand.map { min(screen.width - margin, $0.minX) } ?? (screen.width - margin)
+            let room = rightEdge - (t.maxX + gap)
+            besideRail = room >= minimumRoom ? room : .infinity
+        } else {
+            besideRail = .infinity
+        }
+        return max(0, min(preferred, page, besideRail, screen.width - 2 * margin))
     }
 
     /// The crease of the Duo half-folded upright, its laptop pose: on iOS 27.1 the top of the fold's
@@ -424,43 +420,26 @@ enum TourPolicy {
 
     /// Where the card goes, in the screen's space (§6.3). `card` is its width and the height its
     /// words want there; `targets` the union of what its step lights (nil before they are
-    /// measured: centred in the picture); `stream` the picture's panel; `room`, with Larger Picture
-    /// on a phone, the room the picture's frame sits at the top of, which counts as the picture's
-    /// half (so a card can stand in the black under a short picture, its tail at row 1).
+    /// measured: centred in the picture); `stream` the picture's panel.
     ///
     /// - The picture's step: centred in the picture. Too tall for the picture, it grows toward the
     ///   top margin, then, upright without a crease, toward the bottom margin.
-    /// - Sideways, a bar step: 12 pt below its targets, centred on them, with a tail up; too tall
-    ///   for the room down to the bottom margin, as tall as that room, its words scrolling.
-    /// - Upright: in the picture's half, so it never covers the laptop half it is about and never
+    /// - Sideways, a rail step: 12 pt to the right of the leading rail, centred vertically on its
+    ///   targets and off the book pose's fold; if there is not enough room beside the rail, centred
+    ///   in the screen with `coversTargets`.
+    /// - Upright: in the picture's half, so it never covers the controls it is about and never
     ///   crosses the crease; a lower step's bottom 12 pt above the picture's bottom, with a tail
     ///   down only when its targets begin within 48 pt and no crease lies between. Too tall for
     ///   that: it grows toward the top margin, then down to 12 pt above its targets (with a crease,
-    ///   the picture's half), the same tail rule, its words scrolling past that.
-    /// - A phone held upright has a short picture over its controls, whose rows sit in the middle
-    ///   of the screen: a card too tall for the picture's pane stands 12 pt above its targets,
-    ///   growing toward the top margin (from the top margin down, it would half cover a row), and
-    ///   one that does not fit above them goes 12 pt under them when it fits there, or when the
-    ///   room there is the larger (and holds a card), with a tail up, as sideways. The laptop
-    ///   card's targets reach the bottom, so it stays above them.
-    /// - A card never covers its own step's targets, so the lit control stays in view at every text
-    ///   size; only a room beside them smaller than `minimumRoom` makes it grow over them (toward
-    ///   the top sideways, toward the bottom margin upright), with no tail, `coversTargets`.
-    /// - Past the whole screen less its margins (with a crease, the upper half), a card is as tall
-    ///   as the room, and its words scroll.
-    /// - The book pose (the Duo half-folded sideways, `info` its fold): a card that would cross the
-    ///   fold goes onto the page its middle is on, or the other when only that one holds it.
+    ///   the picture's half); on a phone under its targets when it fits there or that room is larger.
     static func place(card: CGSize, targets: CGRect?, isStream: Bool, screen: CGSize, layout: TourLayout,
-                      stream: CGRect, room: CGRect? = nil, bottomInset: CGFloat, fold info: FoldInfo = .inferred) -> TourPlacement {
+                      stream: CGRect, bottomInset: CGFloat, fold info: FoldInfo = .inferred) -> TourPlacement {
         let w = card.width
         let h = max(0, card.height)
         let top = margin
         let bottom = max(top, screen.height - margin - max(0, bottomInset))
         let fold = crease(screen, info)
-        // Upright, how low a card goes while it stays in the picture's half: the picture's, or with
-        // Larger Picture its room's, which a short picture leaves black below it.
-        let half = room ?? stream
-        let pictureBottom = min(bottom, max(top, min(half.maxY - gap, fold.map { $0 - margin } ?? .infinity)))
+        let pictureBottom = min(bottom, max(top, min(stream.maxY - gap, fold.map { $0 - margin } ?? .infinity)))
 
         func x(centredOn mid: CGFloat) -> CGFloat {
             DuoPosture.offTheFold(x: clamped(mid), width: w, screenWidth: screen.width, margin: margin, fold: info)
@@ -489,16 +468,18 @@ enum TourPolicy {
         let cardX = x(centredOn: t.midX)
         let lit = t.insetBy(dx: -cutoutOutset, dy: -cutoutOutset)
         if layout == .landscape {
-            // Below the bar's targets, as tall as its words or as the room down to the bottom
-            // margin; only a room too small for a card makes it grow toward the top, over them.
-            let below = t.maxY + gap
-            let room = bottom - below
-            if h <= room || room >= minimumRoom {
-                let rect = CGRect(x: cardX, y: below, width: w, height: min(h, room))
-                return TourPlacement(card: rect, tail: TourTail(edge: .up, x: tip(rect, t.midX)))
+            // Sideways: controls live in the leading vertical rail, so place the card 12 pt to its
+            // right, vertically centred on its targets and kept off the book pose's fold.
+            let beside = t.maxX + gap
+            let placedX = DuoPosture.offTheFold(x: beside, width: w, screenWidth: screen.width, margin: margin, fold: info)
+            let roomH = max(0, bottom - top)
+            let cardH = min(h, roomH)
+            let y = min(max(t.midY - cardH / 2, top), bottom - cardH)
+            if placedX >= beside && placedX + w <= screen.width - margin + 0.5 {
+                let rect = CGRect(x: placedX, y: y, width: w, height: cardH)
+                return TourPlacement(card: rect, tail: nil, coversTargets: rect.intersects(lit))
             }
-            let y = max(top, bottom - h)
-            let rect = CGRect(x: cardX, y: y, width: w, height: min(h, bottom - y))
+            let rect = CGRect(x: cardX, y: y, width: w, height: cardH)
             return TourPlacement(card: rect, tail: nil, coversTargets: rect.intersects(lit))
         }
 
@@ -576,7 +557,7 @@ enum TourPolicy {
     /// Display in either form), which that tour never explained. Aa is named only in the Virtual
     /// Display row.
     static func copy(_ t: TourTopic, _ layout: TourLayout, mac: String, device: String,
-                     voiceOver: Bool, firstOfRun: Bool, keysOnItsSide: Bool = false, thumbnails: Bool = true,
+                     voiceOver: Bool, firstOfRun: Bool, keysOnItsSide: Bool = false,
                      features: TourFeatures) -> TourCopy {
         let mac = mac.isEmpty ? "your Mac" : mac
         let iPad = device == "iPad"
@@ -586,74 +567,47 @@ enum TourPolicy {
                         row("contextualmenu.and.cursorarrow", [strong("Touch and hold"), plain(" to right-click.")]),
                         row("hand.draw", [strong("Drag"), plain(" to scroll.")])]
             if iPad { rows.append(row("applepencil", [strong("Apple Pencil"), plain(" works as a mouse.")])) }
-            // Pinch to zoom (StreamZoom, PR #196): this device's alone, 1× to 5× about the pinch;
-            // zoomed in, two fingers are the picture's and one finger still the Mac's.
             rows.append(row("plus.magnifyingglass", [strong("Pinch"), plain(" to zoom the picture here, up to 5×. Zoomed in, two fingers move it, and one finger still taps, holds and drags on \(mac).")], new: true))
-            // The three-finger gestures (TrackpadGestures, the Mac's GestureChords): only while this
-            // device's switch is on and the Mac takes them. The pinch and the spread are the Settings
-            // panel's rows.
             if features.gestures {
                 rows.append(row("hand.raised.fingers.spread", [strong("Swipe with three fingers"), plain(": up for Mission Control, down for App Exposé, and sideways between Spaces.")], new: true))
             }
             let hint: String
             switch layout {
-            case .landscape: hint = "The picture of \(mac) fills the screen below the bar."
-            case .portrait: hint = "The picture of \(mac) fills the top half of the screen."
-            case .phone: hint = "The picture of \(mac) is at the top of the screen."
+            case .landscape: hint = "The picture of \(mac) fills the screen beside the rail."
+            case .portrait, .phone: hint = "The picture of \(mac) is at the top of the screen."
             }
             return TourCopy(title: "Tap, Hold, Drag and Pinch", subtitle: "What you do here happens on \(mac).", rows: rows, hint: hint)
         case .bar:
             var rows: [TourRow]
-            if voiceOver {
+            if layout == .landscape {
+                rows = [voiceOver
+                    ? row("magnifyingglass", [strong("Apps"), plain(" lists the apps on \(mac) and the Desktop. Choose an open app again for its next window.")])
+                    : row("magnifyingglass", [strong("Apps"), plain(" lists the apps on \(mac) and the Desktop: tap an open app again for its next window.")])]
+            } else if voiceOver {
                 rows = [row("hand.point.up.left", [strong("Each window"), plain(" has actions: close, minimize, full screen, and move left or right. Swipe up or down to hear them.")])]
             } else {
                 rows = [row("hand.point.up.left", [strong("Touch and hold"), plain(" a window to close, minimize or go full screen. Keep holding and drag to move it.")])]
             }
-            // A phone with Larger Picture has no thumbnails: windows come from Apps, which shows an
-            // open app's next window when it is chosen again (AppDrawer).
-            if layout == .phone && !thumbnails {
-                rows[0] = voiceOver
-                    ? row("magnifyingglass", [strong("Apps"), plain(" lists the apps on \(mac). Choose an open one again for its next window.")])
-                    : row("magnifyingglass", [strong("Apps"), plain(" lists the apps on \(mac): tap an open one again for its next window.")])
-            }
-            // The Menus button (MacMenuButton): only while it is on screen.
             if features.menus {
                 rows.append(row("filemenu.and.selection", [strong("Menus"), plain(" has the menu bar of the app you’re using on \(mac).")], new: true))
             }
-            // Virtual Display, on by default in Sill for Mac since PR #236 (HostConfig.app), with Aa in it:
-            // the only row that names Aa. Aa sizes a window, never the Desktop (dimmed over it:
-            // TextScale.selectable), and on the virtual display a window is the panel ÷ Aa's scale.
-            // On, it says so; off, where the switch is. Both forms are New: the tour never told of it.
-            let aa = voiceOver ? [plain("; "), strong("Text size"), plain(" then makes its text larger or smaller: swipe up or down on it.")]
-                               : [plain("; "), strong("Aa"), plain(" then sizes its text.")]
+            let textSize = [plain("; "), strong("Text Size"), plain(" in Settings then sizes its text.")]
             if features.virtualDisplay {
-                rows.append(row("display", [strong("Virtual Display"), plain(" is on: a window you pick streams from a display of its own on \(mac), so it keeps updating when something covers it")] + aa, new: true))
+                rows.append(row("display", [strong("Virtual Display"), plain(" is on: a window you pick streams from a display of its own on \(mac), so it keeps updating when something covers it")] + textSize, new: true))
             } else {
-                rows.append(row("display", [strong("Virtual Display"), plain(", in Settings, streams a window you pick from a display of its own on \(mac), so it keeps updating when something covers it")] + aa, new: true))
+                rows.append(row("display", [strong("Virtual Display"), plain(", in Settings, streams a window you pick from a display of its own on \(mac), so it keeps updating when something covers it")] + textSize, new: true))
             }
-            // The Keyboard button is the bar's sideways and a phone's upright; the halves' keyboard
-            // is a cap, which the laptop card names. A hardware keyboard's keys go to the Mac without
-            // it (HardwareKeyboardPolicy), and with one attached it brings iPadOS's keyboard bar.
-            if layout != .portrait {
-                rows.append(row("keyboard", [strong("Keyboard"), plain(" brings up the on-screen keyboard to type on \(mac).")]))
-                rows.append(row("keyboard.badge.ellipsis", [strong("A hardware keyboard"), plain(" types on \(mac) by itself, Esc included, and "), strong("Keyboard"), plain(" then brings up the keyboard bar.")], new: true))
-            }
+            rows.append(row("keyboard", [strong("Keyboard"), plain(" brings up the on-screen keyboard with a trackpad and keys to type on \(mac).")]))
+            rows.append(row("keyboard.badge.ellipsis", [strong("A hardware keyboard"), plain(" types on \(mac) by itself, Esc included, and "), strong("Keyboard"), plain(" then brings up the keyboard bar.")], new: true))
             let hint: String
             switch layout {
-            case .landscape: hint = "In the bar at the top, after Apps."
-            case .portrait: hint = "In the bar below the picture, after Apps."
-            case .phone where !thumbnails: hint = features.menus ? "Under the picture, in the row of buttons: Apps, Menus, Aa and Keyboard."
-                                                                 : "Under the picture, in the row of buttons: Apps, Aa and Keyboard."
-            case .phone: hint = features.menus ? "Under the picture: Aa and Keyboard in the first row, the windows and Menus in the second."
-                                               : "Under the picture: Aa and Keyboard in the first row, the windows in the second."
+            case .landscape: hint = features.menus ? "In the rail on the left: Apps, Menus and Keyboard."
+                                                   : "In the rail on the left: Apps and Keyboard."
+            case .portrait, .phone: hint = "In the bar below the picture, after Apps."
             }
             let title = features.menus ? "Windows and Menus" : "Windows"
             return TourCopy(title: title, subtitle: nil, rows: rows, hint: hint)
         case .sharing:
-            // The clipboard both ways (docs/clipboard-plan.md) and the Mac's sound (docs/audio-plan.md),
-            // both new, their switches behind the Settings button: only what this Mac has, and an older
-            // Mac's update. A password manager's copies go like any other (2026-10-29), so no row
-            // speaks of them.
             var rows: [TourRow] = []
             if features.clipboard {
                 rows.append(row("doc.on.clipboard", [plain("With "), strong("Share Clipboard"), plain(", text you copy on \(mac) is ready to paste on this \(device).")], new: true))
@@ -669,12 +623,11 @@ enum TourPolicy {
             }
             let title = features.clipboard == features.sound ? "Clipboard and Sound" : features.clipboard ? "Clipboard" : "Sound"
             return TourCopy(title: title, subtitle: nil, rows: rows,
-                            hint: layout == .phone ? "In Settings, the last button in the row under the picture." : "In Settings, the last button in the bar.")
+                            hint: layout == .landscape ? "In Settings, at the bottom of the rail on the left."
+                                                       : "In Settings, the last button in the bar below the picture.")
         case .settings:
             var rows = [row("xmark.circle", [strong("Disconnect"), plain(" is at the bottom of Settings.")]),
                         row("questionmark.circle", [strong("Take the Tour"), plain(" is there too, to see this again.")])]
-            // This device's own new switches (its Settings group): a finger's drag and a thumbnail's
-            // hold, which VoiceOver has no way of its own to make.
             if !voiceOver {
                 rows.append(row("arrow.up.arrow.down", [strong("Reverse Scrolling"), plain(" turns a finger’s drag and the on-screen trackpad’s two-finger scroll around.")], new: true))
                 rows.append(row("timer", [strong("Hold to Show Window Controls"), plain(" sets how long you hold a window’s thumbnail before its controls show.")], new: true))
@@ -684,7 +637,8 @@ enum TourPolicy {
                 rows.append(row(iPad ? "ipad" : "iphone", [strong(turn), plain(" for a trackpad and keys.")]))
             }
             return TourCopy(title: "Settings", subtitle: nil, rows: rows,
-                            hint: layout == .phone ? "The last button in the row under the picture." : "The last button in the bar.")
+                            hint: layout == .landscape ? "At the bottom of the rail on the left."
+                                                       : "The last button in the bar below the picture.")
         case .laptop:
             var rows: [TourRow]
             if voiceOver {
@@ -694,28 +648,13 @@ enum TourPolicy {
                 rows = [row("command", [strong("cmd, opt, ctrl and shift"), plain(" stay on for the next key or trackpad click: tap cmd, then C, to copy.")],
                             spoken: "Command, Option, Control and Shift stay on for the next key or trackpad click: tap Command, then C, to copy.")]
             }
-            // A phone's keyboard is row 1's button, which the bar card names; the halves' is a cap.
-            if layout != .phone {
-                rows.append(row("keyboard", [strong("The keyboard key"), plain(" brings up the on-screen keyboard to type on \(mac).")]))
-                rows.append(row("keyboard.badge.ellipsis", [strong("A hardware keyboard"), plain(" types on \(mac) by itself, Esc included, and "), strong("the keyboard key"), plain(" then brings up the keyboard bar.")], new: true))
-            }
             if !voiceOver {
                 rows.append(row("cursorarrow.click.2", [strong("Tap with two fingers"), plain(" on the trackpad to right-click.")]))
                 rows.append(row("hand.draw", [strong("Touch and hold"), plain(" the trackpad, "), strong("then drag"), plain(", to move a window or select text.")]))
             }
-            // Larger Picture (docs/larger-picture-plan.md), where the Settings panel offers it: on this
-            // card, upright's alone, which a phone is always offered at its first upright turn (the
-            // Settings card's would miss a tour taken sideways).
-            if layout == .phone && features.largerPicture {
-                rows.append(row("rectangle.expand.vertical", [strong("Larger Picture"), plain(", in Settings: a window’s picture takes the place of the thumbnails and reaches down to where the keyboard comes up.")], new: true))
-            }
             let subtitle = keysOnItsSide ? "On its side, Sill adds keys and a trackpad." : "Upright, Sill adds keys and a trackpad."
-            let hint: String
-            switch layout {
-            case .landscape, .portrait: hint = "Below the bar: the row of keys, then the trackpad."
-            case .phone: hint = thumbnails ? "Under the windows: the row of keys, then the trackpad." : "Under the buttons: the row of keys, then the trackpad."
-            }
-            return TourCopy(title: "Keys and Trackpad", subtitle: firstOfRun ? subtitle : nil, rows: rows, hint: hint)
+            return TourCopy(title: "Keys and Trackpad", subtitle: firstOfRun ? subtitle : nil, rows: rows,
+                            hint: "Below the bar: the trackpad, then the row of keys.")
         }
     }
 

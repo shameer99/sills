@@ -503,5 +503,47 @@ do {
     check(pad3.cursor == pt(0.50, 0.40), "rest: another device driving on, the finger's move goes on from its latest position")
 }
 
+// MARK: Space-bar floating cursor (FloatingCursor)
+
+do {
+    var fc = FloatingCursor()
+    let view = CGSize(width: 400, height: 250) // span = min(400, 250) = 250 >= 120
+    check(!fc.active && fc.pad.cursor == pt(0.5, 0.5), "floating cursor starts inactive in the middle")
+    check(fc.update(to: pt(100, 100), in: view, anchor: nil, reseeds: 0) == nil, "update while inactive returns nil")
+
+    // Begin adopts anchor and reseeds.
+    fc.begin(at: pt(50, 60), anchor: pt(0.25, 0.40), reseeds: 2)
+    check(fc.active && fc.pad.cursor == pt(0.25, 0.40) && fc.pad.reseedsSeen == 2, "begin adopts anchor and reseeds")
+    // Zero delta produces no move.
+    check(fc.update(to: pt(50, 60), in: view, anchor: pt(0.25, 0.40), reseeds: 2) == nil, "zero delta returns nil")
+    // Relative move: view 400x250 -> dx = 50 / 400 * 1.25 = 0.15625, dy = -25 / 250 * 1.25 = -0.125.
+    let m1 = fc.update(to: pt(100, 35), in: view, anchor: pt(0.25, 0.40), reseeds: 2)
+    check(m1.map { abs($0.x - 0.40625) < 1e-12 && abs($0.y - 0.275) < 1e-12 } == true, "relative move scales by travel/span: \(String(describing: m1))")
+    // Subsequent move is incremental from last point (100, 35): dx = 20 / 400 * 1.25 = 0.0625, dy = 20 / 250 * 1.25 = 0.10.
+    let m2 = fc.update(to: pt(120, 55), in: view, anchor: pt(0.25, 0.40), reseeds: 2)
+    check(m2.map { abs($0.x - 0.46875) < 1e-12 && abs($0.y - 0.375) < 1e-12 } == true, "incremental move from last point: \(String(describing: m2))")
+    // Mid-stroke reseed catches up to new anchor before applying delta (dx = 20 / 400 * 1.25 = 0.0625).
+    let m3 = fc.update(to: pt(140, 55), in: view, anchor: pt(0.10, 0.80), reseeds: 3)
+    check(m3.map { abs($0.x - 0.1625) < 1e-12 && abs($0.y - 0.80) < 1e-12 } == true && fc.pad.reseedsSeen == 3,
+          "mid-stroke reseed catches up before delta: \(String(describing: m3))")
+    // Clamping at edges.
+    let m4 = fc.update(to: pt(1000, -1000), in: view, anchor: nil, reseeds: 3)
+    check(m4 == pt(1, 0), "floating cursor clamps to 0...1")
+    // Non-finite point or zero/negative viewSize returns nil without corrupting state.
+    check(fc.update(to: pt(.nan, 10), in: view, anchor: nil, reseeds: 3) == nil, "NaN point returns nil")
+    check(fc.update(to: pt(100, 100), in: CGSize(width: 0, height: 250), anchor: nil, reseeds: 3) == nil, "zero width returns nil")
+    check(fc.update(to: pt(100, 100), in: CGSize(width: 250, height: -5), anchor: nil, reseeds: 3) == nil, "negative height returns nil")
+    // minSpan floor (120) when view is smaller than 120 (e.g., 40x40): dx = 24 / 120 * 1.25 = 0.25, dy = 12 / 120 * 1.25 = 0.125.
+    fc.begin(at: pt(0, 0), anchor: pt(0.5, 0.5), reseeds: 3)
+    let mSmall = fc.update(to: pt(24, 12), in: CGSize(width: 40, height: 40), anchor: nil, reseeds: 3)
+    check(mSmall.map { abs($0.x - 0.75) < 1e-12 && abs($0.y - 0.625) < 1e-12 } == true, "minSpan floor 120: \(String(describing: mSmall))")
+    // End clears active and ignores further updates.
+    fc.end()
+    check(!fc.active && fc.update(to: pt(50, 50), in: view, anchor: nil, reseeds: 3) == nil, "end stops updates")
+    // Non-finite begin does not activate.
+    fc.begin(at: pt(.infinity, 0), anchor: nil, reseeds: 4)
+    check(!fc.active, "non-finite begin stays inactive")
+}
+
 print("\(checks) checks, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

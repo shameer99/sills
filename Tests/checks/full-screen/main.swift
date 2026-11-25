@@ -253,122 +253,112 @@ for (t, v, w) in [(-27.0, -993.0, 852.0), (-25, 0, 393), (-46, -1660, 852), (-62
 
 // MARK: - The preview's cut: the picture's whole place in each layout
 
-/// The cut and what the preview draws share the line and cover the preview, and the cut runs the whole width.
 func close(_ a: CGFloat, _ b: CGFloat) -> Bool { abs(a - b) < 1e-9 }
 func partition(_ place: RevealCut.Place, _ size: CGSize, _ what: String) {
     let cut = RevealCut.cut(place, in: size), shown = RevealCut.shown(place, in: size)
-    check(cut.minX == 0 && cut.width == size.width && shown.minX == 0 && shown.width == size.width,
-          "\(what): the cut and the controls' band run the whole width")
-    check(close(cut.height + shown.height, size.height) && cut.height >= 0 && shown.height >= 0,
-          "\(what): together they are the preview's height")
     switch place {
-    case .under: check(shown.minY == 0 && close(shown.maxY, cut.minY) && close(cut.maxY, size.height), "\(what): the bar's band, then the cut to the bottom")
-    case .over: check(cut.minY == 0 && close(cut.maxY, shown.minY) && close(shown.maxY, size.height), "\(what): the cut from the top, then the controls' band")
+    case .rightOf:
+        check(cut.minY == 0 && cut.height == size.height && shown.minY == 0 && shown.height == size.height,
+              "\(what): the rail and the cut run the whole height")
+        check(close(cut.width + shown.width, size.width) && cut.width >= 0 && shown.width >= 0,
+              "\(what): together they are the preview's width")
+        check(shown.minX == 0 && close(shown.maxX, cut.minX) && close(cut.maxX, size.width),
+              "\(what): the rail, then the cut to the trailing edge")
+    case .over:
+        check(cut.minX == 0 && cut.width == size.width && shown.minX == 0 && shown.width == size.width,
+              "\(what): the cut and the controls' band run the whole width")
+        check(close(cut.height + shown.height, size.height) && cut.height >= 0 && shown.height >= 0,
+              "\(what): together they are the preview's height")
+        check(cut.minY == 0 && close(cut.maxY, shown.minY) && close(shown.maxY, size.height),
+              "\(what): the cut from the top, then the controls' band")
     }
 }
 
-// Landscape: under the bar, exactly at its bottom edge; the pane 8 pt inside its area, its margin and the area's
-// black all in the cut (Noah on an iPad mini on its side: "the bottom of it has a small black bar below it").
-let sideways: [(String, CGSize, CGFloat)] = [
-    ("an iPad mini on its side", CGSize(width: 1133, height: 720), 86), ("an iPad Pro 13-inch on its side", CGSize(width: 1376, height: 1008), 86),
-    ("an iPhone 15 Pro on its side", CGSize(width: 734, height: 393), 78), ("the Duo open flat on its side", CGSize(width: 951, height: 669), 86),
-    ("the Duo's book pose", CGSize(width: 951, height: 669), 86), ("the Duo's cover on its side", CGSize(width: 594, height: 466), 78),
+// Landscape: everything right of the slim 56 pt leading rail; the picture room is inside the cut.
+let sideways: [(String, CGSize, FoldInfo)] = [
+    ("an iPad mini on its side", CGSize(width: 1133, height: 720), .inferred),
+    ("an iPad Pro 13-inch on its side", CGSize(width: 1376, height: 1008), .inferred),
+    ("an iPhone 15 Pro on its side", CGSize(width: 734, height: 393), .inferred),
+    ("the Duo open flat on its side", CGSize(width: 951, height: 669), .known(nil)),
+    ("the Duo's book pose", CGSize(width: 951, height: 669), .known(CGRect(x: 455.5, y: 0, width: 40, height: 669))),
+    ("the Duo's cover on its side", CGSize(width: 594, height: 466), .known(nil)),
 ]
-for (what, size, bar) in sideways {
-    let place = RevealCut.landscape(barHeight: bar)
+for (what, size, fold) in sideways {
+    let layout = StreamLayout(size: size, fold: fold, hasMenus: true)
+    let place = RevealCut.place(for: layout)
     let cut = RevealCut.cut(place, in: size)
-    check(cut == CGRect(x: 0, y: bar, width: size.width, height: size.height - bar), "\(what): everything under the \(bar) pt bar")
-    check(cut.contains(CGRect(x: 0, y: bar, width: size.width, height: size.height - bar).insetBy(dx: 8, dy: 8)),
-          "\(what): the pane and its margin in the cut")
-    check(RevealCut.shown(place, in: size) == CGRect(x: 0, y: 0, width: size.width, height: bar), "\(what): the bar alone shows")
+    let railW = layout.rail!.maxX
+    check(place == .rightOf(railW) && railW == StreamLayout.railWidth, "\(what): cut right of 56 pt rail")
+    check(cut == CGRect(x: railW, y: 0, width: size.width - railW, height: size.height), "\(what): everything right of the rail")
+    check(cut.contains(layout.pictureRoom), "\(what): the picture room is in the cut")
+    check(RevealCut.shown(place, in: size) == CGRect(x: 0, y: 0, width: railW, height: size.height), "\(what): the rail alone shows")
     partition(place, size, what)
 }
 
-// The halves: over the controls' block, the picture's half, the pane's margin and the laptop pose's fold in the
-// cut; the block's own top margin (PortraitMetrics' padTop: 12, compact 10) stays black above the window bar,
-// as it is once the controls land. The split is DuoPosture's, as the layout takes it.
-let regularControls: CGFloat = 12 + 78 + 2 * 10 + 48 + 22, compactControls: CGFloat = 10 + 62 + 2 * 10 + (2 * 44 + 8) + 16
-let upright: [(String, CGSize, FoldInfo, CGFloat, CGFloat, CGFloat)] = [
-    ("an iPad mini upright", CGSize(width: 744, height: 1109), .inferred, 1.6, regularControls, 12),
-    ("an iPad Pro 13-inch upright", CGSize(width: 1032, height: 1352), .inferred, 1.6, regularControls, 12),
-    ("an iPad window 375 pt wide", CGSize(width: 375, height: 1109), .inferred, 1.6, compactControls, 10),
-    ("the Duo open flat upright, 16:10", CGSize(width: 669, height: 951), .known(nil), 1.6, regularControls, 12),
-    ("the Duo open flat upright, a tall window", CGSize(width: 669, height: 951), .known(nil), 1338.0 / 1902, regularControls, 12),
-    ("the Duo open flat upright, a wide window", CGSize(width: 669, height: 951), .known(nil), 3440.0 / 1440, regularControls, 12),
-    ("the Duo's laptop pose", CGSize(width: 669, height: 951), .known(CGRect(x: 0, y: 455.5, width: 669, height: 40)), 1.6, regularControls, 12),
+// Portrait (iPhones, Duo cover, Duo inner flat and laptop pose, iPads): over the controls' block
+// (bar.minY - rowGap); the picture and any laptop-pose fold band lie inside the cut, while the bar,
+// trackpad and key row lie inside shown.
+let upright: [(String, CGSize, FoldInfo, CGFloat)] = [
+    ("an iPad mini upright", CGSize(width: 744, height: 1109), .inferred, 1.6),
+    ("an iPad Pro 13-inch upright", CGSize(width: 1032, height: 1352), .inferred, 1.6),
+    ("an iPhone 15 Pro", CGSize(width: 393, height: 793), .inferred, 1.6),
+    ("an iPhone 18 Pro Max", CGSize(width: 440, height: 894), .inferred, 1.6),
+    ("an iPhone SE", CGSize(width: 375, height: 647), .inferred, 1.6),
+    ("an iPhone at 320 pt, zoomed", CGSize(width: 320, height: 548), .inferred, 1.6),
+    ("the Duo's cover upright", CGSize(width: 382, height: 678), .known(nil), 1.6),
+    ("the Duo open flat upright, 16:10", CGSize(width: 669, height: 951), .known(nil), 1.6),
+    ("the Duo open flat upright, a tall window", CGSize(width: 669, height: 951), .known(nil), 1338.0 / 1902),
+    ("the Duo open flat upright, a wide window", CGSize(width: 669, height: 951), .known(nil), 3440.0 / 1440),
+    ("the Duo's laptop pose", CGSize(width: 669, height: 951), .known(CGRect(x: 0, y: 455.5, width: 669, height: 40)), 1.6),
 ]
-for (what, size, fold, aspect, controls, padTop) in upright {
-    let split = DuoPosture.portraitSplit(size, fold, aspect: aspect, controls: controls)
-    let place = RevealCut.halves(split)
+for (what, size, fold, aspect) in upright {
+    let layout = StreamLayout(size: size, fold: fold, aspect: aspect, hasMenus: true)
+    let place = RevealCut.place(for: layout)
     let cut = RevealCut.cut(place, in: size)
-    check(cut == CGRect(x: 0, y: 0, width: size.width, height: split.controls), "\(what): everything over the controls' block at \(split.controls)")
-    check(cut.contains(CGRect(x: 0, y: 0, width: size.width, height: split.picture).insetBy(dx: DuoPosture.paneInset, dy: DuoPosture.paneInset))
-          && cut.contains(CGRect(x: 0, y: 0, width: size.width, height: split.picture)), "\(what): the pane and its margin in the cut")
+    let shown = RevealCut.shown(place, in: size)
+    let expectedLine = layout.bar!.minY - StreamLayout.rowGap
+    check(place == .over(expectedLine), "\(what): cut ends rowGap above bar (\(place) vs \(expectedLine))")
+    check(cut.contains(layout.picture), "\(what): picture in cut")
     if let band = fold.horizontalBand {
         check(cut.contains(CGRect(x: 0, y: band.minY.rounded(.down), width: size.width, height: band.maxY.rounded(.up) - band.minY.rounded(.down))),
               "\(what): the fold's band in the cut")
     }
-    check(split.controls + padTop - cut.maxY == padTop, "\(what): \(padTop) pt of the block's black above the window bar, as once landed")
+    check(shown.contains(layout.bar!) && shown.contains(layout.trackpad!) && shown.contains(layout.keys!),
+          "\(what): bar, trackpad and keys inside shown")
     partition(place, size, what)
 }
-
-// A phone upright, and the Duo's cover upright: over the bottom of the picture's room, whatever the video, Larger
-// Picture's room too; the gap above row 1 stays black, 24 pt to the buttons, the shown layout's own (Noah on an
-// iPhone upright: "just a touch of black above the UI buttons on iPhone in portrait to make it look uniform"); and
-// never the pane at the video's shape (a tall window with Larger Picture showed its room's black beside it).
-let phones: [(String, CGSize, Bool)] = [
-    ("an iPhone 15 Pro", CGSize(width: 393, height: 793), false), ("an iPhone 16 Pro Max", CGSize(width: 440, height: 894), false),
-    ("an iPhone SE", CGSize(width: 375, height: 647), false), ("an iPhone at 320 pt, zoomed", CGSize(width: 320, height: 548), false),
-    ("the Duo's cover upright", CGSize(width: 382, height: 678), true),
-]
-let videos = [CGSize(width: 1600, height: 1000), CGSize(width: 1920, height: 1080), CGSize(width: 786, height: 1586),
-              CGSize(width: 1000, height: 1000), CGSize(width: 3440, height: 1440), CGSize(width: 20, height: 400)]
-var largerSeen = 0
-for (what, size, foldable) in phones {
-    for larger in [false, true] {
-        let keyboard = PhonePortraitLayout.keyboard(for: size, largerPicture: larger, foldable: foldable)
-        let layout = PhonePortraitLayout(size: size, keyboard: keyboard)
-        if layout.largerPicture { largerSeen += 1 }
-        let name = what + (layout.largerPicture ? " with Larger Picture" : "")
-        let place = RevealCut.phone(layout)
-        let cut = RevealCut.cut(place, in: size)
-        check(cut == CGRect(x: 0, y: 0, width: size.width, height: layout.picture.maxY), "\(name): everything over the picture's room")
-        check(cut.contains(layout.picture) && cut.contains(layout.picture.insetBy(dx: -PhonePortraitLayout.margin, dy: 0)),
-              "\(name): the room and its side margins in the cut")
-        for video in videos + [CGSize(width: 2 * size.width, height: 2 * size.height)] {
-            let pane = layout.largerPicture ? layout.pane(video: video) : layout.picture
-            check(pane.isEmpty || cut.contains(pane), "\(name): the pane at \(Int(video.width))×\(Int(video.height)) in the cut")
-        }
-        var rows = [layout.row1, layout.keys, layout.trackpad]
-        if !layout.largerPicture { rows.append(layout.strip) }
-        check(rows.allSatisfy { $0.minY >= cut.maxY && RevealCut.shown(place, in: size).contains($0) }, "\(name): every row shows, none cut")
-        check(layout.row1.minY - cut.maxY == PhonePortraitLayout.margin + PhonePortraitLayout.underPicture + PhonePortraitLayout.band
-              && layout.row1.minY - cut.maxY == 24, "\(name): 24 pt of black above row 1, the layout's own gap")
-        partition(place, size, name)
-    }
+// Portrait with keyboard up (no bar): falls back to pictureRoom.maxY.
+do {
+    let kbLayout = StreamLayout(size: CGSize(width: 393, height: 793), keyboardTop: 493)
+    check(RevealCut.place(for: kbLayout) == .over(kbLayout.pictureRoom.maxY), "kb up: over pictureRoom.maxY")
 }
-check(largerSeen >= 2, "Larger Picture's room was among the phones (\(largerSeen))")
 
 // The rule at its edges: a line past the preview, no preview.
 let screen10 = CGSize(width: 10, height: 10)
-check(RevealCut.cut(.under(-5), in: screen10) == CGRect(x: 0, y: 0, width: 10, height: 10)
-      && RevealCut.cut(.under(15), in: screen10) == CGRect(x: 0, y: 10, width: 10, height: 0)
+check(RevealCut.cut(.rightOf(-5), in: screen10) == CGRect(x: 0, y: 0, width: 10, height: 10)
+      && RevealCut.cut(.rightOf(15), in: screen10) == CGRect(x: 10, y: 0, width: 0, height: 10)
       && RevealCut.cut(.over(15), in: screen10) == CGRect(x: 0, y: 0, width: 10, height: 10)
       && RevealCut.cut(.over(-5), in: screen10) == CGRect(x: 0, y: 0, width: 10, height: 0),
       "a line past the preview: all of it, or none")
-check(RevealCut.shown(.under(15), in: screen10) == CGRect(x: 0, y: 0, width: 10, height: 10)
+check(RevealCut.shown(.rightOf(15), in: screen10) == CGRect(x: 0, y: 0, width: 10, height: 10)
       && RevealCut.shown(.over(-5), in: screen10) == CGRect(x: 0, y: 0, width: 10, height: 10),
       "a line past the preview: the band is all of it")
-check(RevealCut.cut(.under(5), in: CGSize(width: 0, height: 10)) == .zero && RevealCut.cut(.over(5), in: CGSize(width: 10, height: 0)) == .zero
-      && RevealCut.shown(.under(5), in: .zero) == .zero && RevealCut.shown(.over(5), in: CGSize(width: 10, height: 0)) == .zero,
+check(RevealCut.cut(.rightOf(5), in: CGSize(width: 0, height: 10)) == .zero && RevealCut.cut(.over(5), in: CGSize(width: 10, height: 0)) == .zero
+      && RevealCut.shown(.rightOf(5), in: .zero) == .zero && RevealCut.shown(.over(5), in: CGSize(width: 10, height: 0)) == .zero,
       "no preview: no cut, nothing shown")
 for n in 0..<5_000 {
     let size = CGSize(width: r(1...1400), height: r(1...1400))
     let line = CGFloat(r(-50...1450))
-    for place in [RevealCut.Place.under(line), .over(line)] {
+    for place in [RevealCut.Place.rightOf(line), .over(line)] {
         partition(place, size, "random \(n)")
-        let cut = RevealCut.cut(place, in: size), y = min(max(line, 0), size.height)
-        if case .under = place { check(cut.minY == y, "random \(n): the cut starts at the bar's edge") } else { check(cut.maxY == y, "random \(n): the cut ends at the controls' black") }
+        let cut = RevealCut.cut(place, in: size)
+        if case .rightOf = place {
+            let x = min(max(line, 0), size.width)
+            check(cut.minX == x, "random \(n): the cut starts at the rail's edge")
+        } else {
+            let y = min(max(line, 0), size.height)
+            check(cut.maxY == y, "random \(n): the cut ends at the controls' black")
+        }
     }
 }
 

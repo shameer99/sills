@@ -38,6 +38,8 @@ struct HostSettingsPanel: View {
     @ObservedObject var client: StreamClient
     /// Done, Esc or ⌘., and the VoiceOver escape gesture.
     let close: () -> Void
+    /// The Mac window's text scale (formerly Aa in the bar): device points per Mac point, nil = Off.
+    @Binding var textScale: Double?
     /// Pair This iPad…: the stream screen puts the panel away and covers the stream with the
     /// pairing overlay.
     var pairThisDevice: () -> Void = {}
@@ -71,14 +73,8 @@ struct HostSettingsPanel: View {
     /// This device's switch for Picture in Picture (#291, docs/picture-in-picture-plan.md): off unless turned
     /// on (`PictureInPicturePolicy.defaultOn`), read by PictureInPictureHub, never sent.
     @AppStorage(StreamClient.pictureInPictureKey) private var pictureInPicture = PictureInPicturePolicy.defaultOn
-    /// This device's switch for Larger Picture (docs/larger-picture-plan.md): off unless turned on,
-    /// read by the stream screen, never sent.
-    @AppStorage(StreamClient.largerPictureKey) private var largerPicture = false
     /// Shake to Show Controls (full screen, docs/full-screen-plan.md): on unless turned off, never sent.
     @AppStorage(FullScreenPolicy.shakeKey) private var shakeShowsControls = true
-    /// Whether the switch is offered here, the stream screen's say (`largerPictureOffered`): only on an
-    /// iPhone without a hinge whose picture it makes larger.
-    @Environment(\.largerPictureOffered) private var offersLargerPicture
     /// This device's switch for the clipboard (docs/clipboard-plan.md): on unless turned off, read by
     /// StreamClient+Clipboard at each decision; a change subscribes or stops at once.
     @AppStorage(StreamClient.clipboardKey) private var clipboardOn = true
@@ -713,15 +709,30 @@ struct HostSettingsPanel: View {
         // Full Screen and Shake to Show Controls here only while the Mac's settings do not show (loading, or a
         // Mac without them): FullScreenPolicy.rowsPlace.
         if fullScreenPlace == .thisDevice { fullScreenRows }
-        if offersLargerPicture {
-            Rows {
-                Toggle(isOn: $largerPicture) {
-                    Text("Larger Picture").foregroundStyle(Palette.text)
+        // Text size (formerly Aa in the bar): fits a streamed window to the panel at this scale.
+        Rows {
+            AdaptiveRow(title: "Text Size", since: nil) {
+                let offered = client.textScaleOffersOff
+                let available = client.textScaleSelectable
+                let steps = TextScale.detents(offered: offered)
+                let current = TextScale.position(of: textScale, offered: offered)
+                Picker("Text Size", selection: Binding(
+                    get: { current },
+                    set: { textScale = TextScale.scale(at: $0) }
+                )) {
+                    ForEach(steps, id: \.self) { step in
+                        Text(TextScale.title(at: step)).tag(step)
+                    }
                 }
-                .rowFrame()
+                .pickerStyle(.menu)
+                .fixedSize()
+                .disabled(!available)
+                .accessibilityHint(available ? "" : client.textScaleUnavailableHint)
             }
-            Footnote(text: Self.largerPictureFooter)
         }
+        Footnote(text: client.textScaleSelectable
+                 ? "Sizes a streamed window’s text to fit this \(device)."
+                 : client.textScaleUnavailableHint)
         // The clipboard (docs/clipboard-plan.md): only while the Mac says it shares it.
         if ClipboardPolicy.hostTakes(client.hostClipboard) {
             Rows {
@@ -811,13 +822,6 @@ struct HostSettingsPanel: View {
 
     /// The Mac's window list said it takes the gestures (`WindowList.gestures`).
     private var macTakesGestures: Bool { (client.hostGestures ?? 0) >= TrackpadGesture.generation }
-
-    /// Under Larger Picture's switch: that it is a window's picture (the Desktop, which Aa never
-    /// resizes, keeps the thumbnails: `PhonePortraitLayout.largerPicture(switchOn:streaming:)`), what
-    /// it gives up, where windows come from instead, that the Mac fits a window to the taller picture
-    /// once Aa sets its text size (or on the virtual display), and that a change applies as the panel
-    /// closes (StreamScreen's `largerPictureHeld`).
-    static let largerPictureFooter = "Held upright, a window’s picture takes the place of the window thumbnails and reaches down to where the keyboard comes up. The Desktop keeps the thumbnails. Switch windows with Apps: tap an open app again for its next window. To fill the taller picture with a window, set its text size with Aa. A change applies when you close Settings."
 
     /// What each gesture does on the Mac, and what the row does as an accessibility action: its one
     /// gesture, or, for the Spaces, one action each way (natural direction: a swipe left brings the
@@ -1286,20 +1290,5 @@ private extension View {
     /// A row inside a group: at least 44 pt tall, inset 14 pt.
     func rowFrame() -> some View {
         frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 14)
-    }
-}
-
-/// Whether the Settings panel offers Larger Picture (This iPhone's first switch, or its second after
-/// Mute while the Mac has sound): the stream screen's say, true on an iPhone without a hinge whose
-/// picture Larger Picture makes larger (`PhonePortraitLayout.offersLargerPicture`); false everywhere
-/// else, the iPhone Duo and an iPad included, and on an iPhone that Display Zoom makes 320 pt wide.
-private struct LargerPictureOfferedKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
-extension EnvironmentValues {
-    var largerPictureOffered: Bool {
-        get { self[LargerPictureOfferedKey.self] }
-        set { self[LargerPictureOfferedKey.self] = newValue }
     }
 }

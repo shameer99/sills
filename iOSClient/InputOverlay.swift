@@ -73,6 +73,11 @@ final class InputOverlayView: UIView, UITextInput, UIGestureRecognizerDelegate {
     /// type. The Pencil's position is kept, from `.pencil`, and drawn only with Q2's flip
     /// (`PointerPresence.pencilShowsPointer`), in any layout, as a Pencil here is a mouse.
     var setOwnPointer: (CGPoint?, PointerPresence.Origin) -> Void = { _, _ in }
+    /// The pointer feed's anchor and re-seeds (`StreamClient.pointerFeedState`), for the space-bar
+    /// floating-cursor trackpad to carry on from where the Mac's or trackpad's pointer is.
+    var pointerFeed: () -> (anchor: CGPoint?, reseeds: Int) = { (nil, 0) }
+    /// Space-bar trackpad relative-move state (`FloatingCursor`).
+    private var floatingCursor = FloatingCursor()
 
     /// Pan translation already turned into scroll, so each callback sends only the new delta.
     private var lastPanTranslation: CGPoint = .zero
@@ -982,6 +987,7 @@ final class InputOverlayView: UIView, UITextInput, UIGestureRecognizerDelegate {
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
         if resigned {
+            floatingCursor.end()
             releaseForwardedKeys()
             commitComposition("resigned")
             keyboardProxy?.resigned(self)
@@ -1309,6 +1315,8 @@ extension InputOverlayView {
     var selectedTextRange: UITextRange? {
         get { Range(composition.selectedRange, composition.generation) }
         set {
+            // Space-bar trackpad moves the Mac pointer relatively and never moves the text caret.
+            guard !floatingCursor.active else { return }
             // What the text system selects of what was typed is kept for its next edit, which replaces it
             // (Korean's syllables built again, a backspace's character: TextComposition.selection); a caret
             // moved without a selection stays at the end, as the Mac's caret cannot be moved from here. A
@@ -1394,6 +1402,26 @@ extension InputOverlayView {
     func closestPosition(to point: CGPoint) -> UITextPosition? { endOfDocument }
     func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? { range.end }
     func characterRange(at point: CGPoint) -> UITextRange? { nil }
+
+    // MARK: Space-bar trackpad (floating cursor)
+
+    /// Holding the system keyboard's space bar enters floating-cursor mode: drive the Mac pointer
+    /// relatively through `FloatingCursor` and the trackpad's pointer path, never moving the text caret.
+    func beginFloatingCursor(at point: CGPoint) {
+        let f = pointerFeed()
+        floatingCursor.begin(at: point, anchor: f.anchor, reseeds: f.reseeds)
+    }
+
+    func updateFloatingCursor(at point: CGPoint) {
+        let f = pointerFeed()
+        guard let cursor = floatingCursor.update(to: point, in: bounds.size, anchor: f.anchor, reseeds: f.reseeds) else { return }
+        setOwnPointer(cursor, .trackpad)
+        send(.pointer(.move, x: cursor.x, y: cursor.y))
+    }
+
+    func endFloatingCursor() {
+        floatingCursor.end()
+    }
 
     /// The top middle of the picture, where the composition shows.
     private var compositionAnchor: CGRect {
@@ -2075,6 +2103,8 @@ struct InputOverlay: UIViewRepresentable {
     let send: (InputEvent) -> Void
     /// `StreamClient.setOwnPointer`; see `InputOverlayView.setOwnPointer`.
     let setOwnPointer: (CGPoint?, PointerPresence.Origin) -> Void
+    /// `StreamClient.pointerFeedState`, for the space-bar floating-cursor trackpad.
+    var pointerFeed: () -> (anchor: CGPoint?, reseeds: Int) = { (nil, 0) }
     let proxy: InputOverlayProxy
     /// The person's own keyboard is up (the proxy's `onOwnChange`): never the hardware keyboard's hold.
     @Binding var isKeyboardShown: Bool
@@ -2102,6 +2132,7 @@ struct InputOverlay: UIViewRepresentable {
         uiView.videoSize = videoSize
         uiView.send = send
         uiView.setOwnPointer = setOwnPointer
+        uiView.pointerFeed = pointerFeed
         uiView.latchedModifiers = latchedModifiers
         uiView.sendGesture = sendGesture
         uiView.macRepeatsKeys = macRepeatsKeys

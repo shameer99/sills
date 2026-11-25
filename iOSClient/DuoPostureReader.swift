@@ -174,34 +174,10 @@ private struct DuoLogger: ViewModifier {
 
 // MARK: - What the layouts ask
 
-extension BarMetrics {
-    /// This bar in the book pose (DuoPosture.bookBar): the right group's buttons and gaps as they
-    /// clear the fold, the strip's width so that it ends short of it (nil: as before), the Settings
-    /// panel no wider than the room past it. Unchanged anywhere else.
-    func clearing(_ fold: FoldInfo, width: CGFloat) -> (bar: BarMetrics, stripWidth: CGFloat?) {
-        // Menus, Aa, Keyboard, Desktop and Settings: Menus counted whether or not it shows, so the
-        // bar never moves when the Mac's menus come and go.
-        let book = DuoPosture.bookBar(width: width, fold: fold, padding: padding, gap: gap, buttonWidth: buttonWidth,
-                                      compactButtonWidth: BarMetrics.compact.buttonWidth, buttons: 5,
-                                      panelWidth: settingsWidth)
-        guard book.stripWidth != nil else { return (self, nil) }
-        let bar = BarMetrics(height: height, padding: padding, gap: book.gap,
-                             buttonWidth: book.buttonWidth, buttonHeight: buttonHeight, buttonSpacing: buttonSpacing,
-                             thumbWidth: thumbWidth, thumbHeight: thumbHeight, thumbRadius: thumbRadius,
-                             thumbSpacing: thumbSpacing, thumbPad: thumbPad, thumbFade: thumbFade,
-                             showsTextSize: showsTextSize, settingsWidth: book.panelWidth)
-        return (bar, book.stripWidth)
-    }
-}
-
-extension PortraitMetrics {
-    /// The halves' controls but the trackpad: the bar, the key row, their gaps and paddings.
-    var controlsHeight: CGFloat { padTop + barHeight + 2 * rowGap + keyBlockHeight + padBottom }
-}
-
 extension StreamClient {
-    /// The Duo open flat, upright: the picture pane's shape (DuoPosture.paneAspect). The Mac fits a
-    /// window to the pane once Aa is set, or on the virtual display; never the Desktop.
+    /// The picture pane's shape: the video's own aspect while the Mac keeps the window's shape; 16:10
+    /// before there is a picture, and while the Mac fits the window to the pane (a window with Text Size
+    /// set, or on the virtual display).
     func duoPaneAspect(textScale: Double?) -> CGFloat {
         var window = false
         if case .window = active { window = true }

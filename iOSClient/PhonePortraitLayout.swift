@@ -1,366 +1,490 @@
 import CoreGraphics
 
-/// Where everything goes on a phone held upright (Noah, 2026-09-27; docs/iphone-portrait-plan.md):
-/// the picture in a fixed 16:10 pane at the top, then row 1 (Apps, Aa, Keyboard, Desktop,
-/// Settings, widened to the row), row 2 (the window thumbnails), row 3 (esc, tab, ctrl, opt, cmd,
-/// shift), and the trackpad in everything left. Every rectangle is a function of the stream
-/// screen's size alone, the screen less its top safe-area inset down to its bottom edge (the stream
-/// screen ignores the bottom inset and the keyboard), so nothing moves when the streamed window
-/// changes shape (a 16:9 one gets black bars above and below) or the keyboard comes up (it covers
-/// the trackpad; row 1, with the Keyboard button, stays above it on every phone).
+/// One unified pure layout for the stream screen in every orientation and on every device (iPhone,
+/// iPhone Duo cover and inner displays open flat or half-folded, iPad). Pure (CoreGraphics + `FoldInfo`),
+/// so `Tests/checks/phone-portrait` compiles it with swiftc and verifies every invariant across all
+/// screen sizes, folds and keyboard heights.
 ///
-/// Larger Picture (Settings › This iPhone, issue #58; docs/larger-picture-plan.md): with the switch
-/// on while a window streams (`largerPicture(switchOn:streaming:)`; the Desktop and nothing
-/// streaming keep the standard arrangement) and the software keyboard's height known (`keyboard`),
-/// the thumbnails' row goes and the picture gets every point that keeps the key row
-/// `keyboardClearance` above the keyboard (on an 18 Pro Max 424×422 against 424×265); the trackpad
-/// is the keyboard's footprint, so nothing moves when it comes up, and the Apps drawer opens above
-/// row 1, where no keyboard reaches (`drawer`). The picture's frame then takes the picture's own
-/// shape inside that room (`pane(video:)`, so a 16:10 window keeps its shape and a taller one
-/// gains), and the viewport is the whole room, which the Mac fits a window to once Aa sets its text
-/// size (or on the virtual display). It applies only where it makes the picture larger
-/// (`largerPictureGains`: not where Display Zoom makes the screen 320 pt wide). Every rectangle is
-/// still a function of the screen's size, the keyboard's height and the switch (with what streams)
-/// alone; the frame and the trackpad's span also of the picture's shape.
+/// One rule, every orientation: the software keyboard is part of the layout; nothing interactive ever
+/// sits under the keyboard or on a fold band.
 ///
-/// `DuoLayout.outerPortrait` on an iPhone draws this (`DuoLayout.phoneArrangement`): every iPhone
-/// upright, and the Duo's outer display upright; an iPad window that narrow keeps the compact halves.
-/// The vertical rhythm is the approved mockup's, with the compact halves' paddings and gaps: 24 pt
-/// from the picture to the buttons and 22 from the buttons to the thumbnails, as the compact window
-/// bar centres its 50 pt buttons in 62 (so 412×389 pt of trackpad on an 18 Pro Max, 374×331 on an
-/// 18 Pro). Pure (CoreGraphics only), so `Tests/checks/phone-portrait` compiles it with swiftc and
-/// checks it at every size.
-struct PhonePortraitLayout: Equatable {
-    /// Around the picture: its pane's margin from the screen's sides and top.
+/// Portrait (`size.height >= size.width`):
+/// - Top to bottom: picture (aspect-fit), one bar (Apps | scrolling window thumbnails | Menus | Keyboard |
+///   Settings; hidden while the keyboard is up), trackpad (takes the slack, minimum 75 pt), modifier row
+///   (esc, tab, ctrl, opt, cmd, shift, plus arrows where width allows and a hide-keyboard cap while the
+///   keyboard is up), then the keyboard's top edge (or bottom margin).
+/// - The picture shrinks (letterboxed, aspect-fit) before the trackpad drops under 75 pt.
+/// - In the Duo's laptop pose (a horizontal fold across the screen): keyboard down puts the picture above
+///   the fold and the bar, trackpad and modifier row below it; keyboard up keeps them below the fold if
+///   the trackpad (75 pt) and modifier row fit there, otherwise lifts picture, trackpad and modifier row
+///   above the fold (including when UIKit reports the keyboard as the whole lower half).
+///
+/// Landscape (`size.width > size.height`):
+/// - Keyboard down: a slim 56 pt leading vertical rail (Apps, Menus, Keyboard, Settings stacked), and the
+///   picture fills the rest with direct touch.
+/// - Keyboard up: the rail hides; above the modifier row and keyboard, the picture aspect-fits on the left
+///   (~55% of width) and the trackpad fills the width to its right (never under 75 pt while room allows);
+///   the modifier row spans above the keyboard with a hide-keyboard cap. In the Duo's book pose (a vertical
+///   fold), the picture takes the leading page, the trackpad takes the trailing page, and the modifier row
+///   splits cleanly across the fold band so no cap sits on the fold.
+struct StreamLayout: Equatable {
+    static let defaultAspect: CGFloat = 1.6
     static let margin: CGFloat = 8
-    /// The picture's shape: 16:10, the shape most Mac windows and displays have. Whole points,
-    /// rounded down, so it is never taller than 16:10 and the rows below sit on whole points.
-    static let aspect: CGFloat = 1.6
-    /// From the picture's margin to row 1's band.
-    static let underPicture: CGFloat = 10
-    /// Row 1 sits in a band 12 pt taller than its buttons, the buttons centred, as the compact window
-    /// bar holds its 50 pt buttons in 62: 6 pt above and below them. So 24 pt from the picture to the
-    /// buttons (8 + 10 + 6) and 16 from the buttons to the strip (6 + 10), whose thumbnails sit 6 pt
-    /// into it: 22 from the buttons to the thumbnails, the mockup Noah approved.
-    static let band: CGFloat = 6
-    /// The rows' and the trackpad's inset from the screen's sides.
     static let side: CGFloat = 14
-    /// Under the trackpad, to the screen's bottom edge.
-    static let bottom: CGFloat = 16
-    /// Between rows, and from row 3 to the trackpad.
-    static let rowGap: CGFloat = 10
-    /// Between buttons in row 1 and between caps in row 3: the same whitespace in both (Noah).
-    static let gap: CGFloat = 8
-    static let buttonHeight: CGFloat = 50
-    /// The strip: 50 pt thumbnails with 6 pt above and below for the app badge and the halo.
-    static let stripHeight: CGFloat = 62
-    /// `WindowStrip` pads its thumbnails this much at each end, so the strip starts this far left
-    /// of the rows and its first thumbnail lines up with Apps and esc.
-    static let stripInset: CGFloat = 8
+    static let bottom: CGFloat = 14
+    static let keyboardGap: CGFloat = 6
+    static let rowGap: CGFloat = 8
+    static let barHeight: CGFloat = 54
+    static let barButtonHeight: CGFloat = 50
+    static let railWidth: CGFloat = 56
+    static let railButtonSize: CGFloat = 46
+    static let railGap: CGFloat = 8
+    static let railTop: CGFloat = 12
     static let capHeight: CGFloat = 44
-    /// The least trackpad there is: only a screen too short for it makes the picture give way, and
-    /// the shortest phone only just (an iPhone SE with Display Zoom, 320×548 under its status bar:
-    /// the picture 188 pt tall, 2 pt short of 16:10).
-    static let minTrackpad: CGFloat = 120
-    /// From row 1 to the drawer and the Settings panel, which hang under it.
+    static let keyGap: CGFloat = 6
+    static let minTrackpad: CGFloat = 75
+    static let landscapePictureShare: CGFloat = 0.55
     static let panelGap: CGFloat = 8
-    /// The Aa ruler's finger travel per detent at most, and `TextScaleControl.sliderInset`, the room
-    /// either side of its four detent spans: the ruler's frame shows two detents either side of the
-    /// thumb (`TextScaleControl.detentsEachSide`), whatever the detents (Off, since issue #179, is a
-    /// sixth that slides in as the finger nears it).
-    static let maxRulerStep: CGFloat = 36
-    static let rulerInset: CGFloat = 30
-    static let rulerSpans: CGFloat = 4
+    /// Eleven 44 pt caps with ten 6 pt gaps: esc, tab, ctrl, opt, cmd, shift, 4 arrows, keyboard.
+    static let wideKeysMinWidth: CGFloat = 544
+    static let minStripWidth: CGFloat = 64
+    static let baseCapCount = 6
+    static let arrowCapCount = 4
 
-    // MARK: Larger Picture
-
-    /// Larger Picture: the key row's bottom at least this far above the software keyboard's top.
-    static let keyboardClearance: CGFloat = 10
-    /// The software keyboard as Sill's input view shows it on an iPhone held upright (autocorrection
-    /// is off, so it has no suggestions bar), measured on the iOS 27 simulators
-    /// (docs/larger-picture-plan.md, Results): 233 pt on an iPhone with a Home button (the SE); with
-    /// Face ID, by the stream screen's width, 320 from 414 pt (the 11 and 11 Pro Max, the Plus and
-    /// Pro Max sizes, the Air), 301 from 390 (the 12 to 18, 16e, 17e, the Pros), and 310 from 375
-    /// (the 12 and 13 mini; the 11 Pro's is 301). Narrower than any phone (Display Zoom), the
-    /// tallest, 320, so the key row stays clear of a keyboard nobody measured.
-    static let homeButtonKeyboard: CGFloat = 233
-    static let faceIDKeyboard: CGFloat = 301
-    static let miniKeyboard: CGFloat = 310
-    static let wideKeyboard: CGFloat = 320
-    static let wideKeyboardFrom: CGFloat = 414
-    static let faceIDKeyboardFrom: CGFloat = 390
-    static let miniKeyboardFrom: CGFloat = 375
-    /// A Home-button iPhone's stream screen is less than this many times as tall as it is wide (the
-    /// SE's 375×647, 1.73; with Display Zoom 320×548, 1.71); one with Face ID is 2.0 or more (from
-    /// the 13 mini's 375×762 to a Plus's 428×879, and the same shape with Display Zoom), so the shape
-    /// tells them apart however the screen is zoomed. (The Duo's cover, 382×678, would read as one
-    /// with a Home button; its keyboard is not known, so Larger Picture leaves it alone: `keyboard`.)
-    static let faceIDShape: CGFloat = 1.9
-    /// Larger Picture's row 1 holds six buttons (Menus with the five), each at least this wide: a
-    /// touch target's least, so the arrangement needs a stream screen 332 pt wide or more.
-    static let minButtonWidth: CGFloat = 44
-
-    /// Row 1, in the landscape bar's order.
-    enum Button: Int, CaseIterable { case apps, textSize, keyboard, desktop, settings }
-    /// Row 3's caps: esc, tab, ctrl, opt, cmd, shift.
-    static let capCount = 6
-
-    /// The stream screen's size, which everything below is measured in (origin at its top left).
     let size: CGSize
-    /// Larger Picture's keyboard: the software keyboard's height the rows are kept above, which makes
-    /// this the Larger Picture arrangement; nil for the standard one.
-    let keyboard: CGFloat?
-    /// The picture's pane: the frame the video is drawn in, aspect-fit, and the viewport the Mac
-    /// fits windows to. With Larger Picture, the picture's room: the viewport still, but the frame is
-    /// the picture's own shape inside it (`pane(video:)`).
+    let isLandscape: Bool
+    /// Normalized keyboard top edge in this screen's space; nil while the keyboard is down.
+    let keyboardTop: CGFloat?
+    /// The room allocated for the picture pane.
+    let pictureRoom: CGRect
+    /// The aspect-fit picture rect inside `pictureRoom`.
     let picture: CGRect
-    /// Row 1's buttons, across the row and 50 pt tall (their band is 6 pt more above and below).
-    let row1: CGRect
-    /// Row 1's buttons, in `Button` order.
-    let buttons: [CGRect]
-    /// Row 1's buttons while the Mac sent its menus, in `Button` order: as `buttons`, but with Larger
-    /// Picture, where the Menus button joins row 1 after Apps (the strip, its usual row, is gone),
-    /// five of six across the row.
-    let buttonsBesideMenus: [CGRect]
-    /// Row 2, the thumbnails. With Larger Picture none: a row of no height at row 1's band's bottom.
-    let strip: CGRect
-    /// The Menus button while the Mac sent its menus: in row 2 at the row's end, under Settings and
-    /// as wide, as tall as row 1's buttons and centred in the strip's height, and the strip ending
-    /// `gap` before it (docs/menu-bar-plan.md §7.5), row 1 keeping its five; with Larger Picture in
-    /// row 1, the second of six (`buttonsBesideMenus`), as the landscape bar has it after Apps.
-    let menus: CGRect
-    let stripBesideMenus: CGRect
-    /// Row 3.
-    let keys: CGRect
-    let caps: [CGRect]
-    let trackpad: CGRect
-    /// The pad's vertical motion is measured against this, not its height: its width ÷ 1.6, so a
-    /// stroke moves the pointer as far down as across on a 16:10 picture, however tall the pad is.
-    /// With Larger Picture the picture's own shape decides (`trackpadSpan(video:)`).
+    /// Portrait one-bar (hidden while the keyboard is up, and nil in landscape).
+    let bar: CGRect?
+    /// Landscape leading vertical rail (hidden while the keyboard is up, and nil in portrait).
+    let rail: CGRect?
+    /// Individual controls inside `bar` or `rail` (nil while the keyboard is up).
+    let appsButton: CGRect?
+    let strip: CGRect?
+    let menusButton: CGRect?
+    let keyboardButton: CGRect?
+    let settingsButton: CGRect?
+    /// Trackpad surface (always present in portrait; present in landscape while the keyboard is up).
+    let trackpad: CGRect?
+    /// Vertical pointer span matching the picture's aspect so pointer travel is isotropic.
     let trackpadSpan: CGFloat
-    /// The Aa ruler while a finger holds Aa: centred on it, over row 1, and never past the row's
-    /// leading edge; `rulerStep` is its points per detent.
-    let ruler: CGRect
-    let rulerStep: CGFloat
-    /// The same, on Aa of `buttonsBesideMenus`.
-    let rulerBesideMenus: CGRect
-    let rulerStepBesideMenus: CGFloat
-    /// The app drawer and the Settings panel, from under row 1 across its whole span (Apps' leading
-    /// edge to Settings' trailing one), so nothing cut shows beside them; each is at most this tall
-    /// (the panel follows its content). With Larger Picture the drawer is above row 1 instead, over
-    /// the picture's room, clear of any keyboard (on an 18 Pro Max 412×438 from 8).
+    /// Modifier row (leading half when split across a vertical fold in the book pose).
+    let keys: CGRect?
+    /// Trailing half of the modifier row in the book pose with the keyboard up; nil elsewhere.
+    let keysTrailing: CGRect?
+    let showsArrows: Bool
+    let showsKeyboardCap: Bool
+    /// Every individual cap rect in `keys` (and `keysTrailing` if split).
+    let caps: [CGRect]
+    /// Apps drawer and Settings panel rects (kept clear of fold bands and the keyboard).
     let drawer: CGRect
     let settings: CGRect
-    /// The Settings panel's top-trailing corner as fractions of `size`: where it grows from.
+    /// Transition anchor for the Settings panel as fractions of `size`.
     let settingsAnchor: CGPoint
-    /// What the drawer's dim and the panel's tap catcher cover: everything but row 1's buttons,
-    /// which stay live while they are open, as the landscape bar does.
+    /// Regions covered by the drawer's dim / Settings tap catcher (leaving the active bar or rail live).
     let dim: [CGRect]
 
-    /// Whether this is the Larger Picture arrangement (no thumbnails' row).
-    var largerPicture: Bool { keyboard != nil }
+    var keyboardUp: Bool { keyboardTop != nil }
 
-    /// Everything but the picture and the trackpad, top to bottom: 240 pt.
-    static var fixedHeight: CGFloat {
-        margin + margin + underPicture + band + buttonHeight + band + rowGap + stripHeight + rowGap + capHeight
-            + rowGap + bottom
+    /// Portrait fixed height (everything except picture and trackpad) when the keyboard is down: 144 pt.
+    static var portraitFixedDown: CGFloat {
+        margin + rowGap + barHeight + rowGap + rowGap + capHeight + bottom
     }
 
-    /// Larger Picture: everything but the picture above the keyboard's top, top to bottom: 152 pt
-    /// (no strip; the key row `keyboardClearance` above the keyboard).
-    static var largerFixedHeight: CGFloat {
-        margin + margin + underPicture + band + buttonHeight + band + capHeight + rowGap + keyboardClearance
+    /// Portrait fixed height above the keyboard (everything except picture and trackpad) when up: 74 pt.
+    static var portraitFixedUp: CGFloat {
+        margin + rowGap + rowGap + capHeight + keyboardGap
     }
 
-    /// `keyboard`: Larger Picture above a software keyboard this tall (`PhonePortraitLayout.keyboard(for:…)`),
-    /// or nil for the standard arrangement.
-    init(size: CGSize, keyboard: CGFloat? = nil) {
-        self.size = size
-        self.keyboard = keyboard
-        let width = size.width, height = size.height
+    /// Room required below a horizontal fold to hold the trackpad (min 75 pt) and modifier row above the keyboard: 141 pt.
+    static var belowFoldMinForKeyboard: CGFloat {
+        rowGap + minTrackpad + rowGap + capHeight + keyboardGap
+    }
 
-        // The picture: full width less the margins, 16:10, unless the trackpad would drop under
-        // its least height; then the picture gives way (to nothing, at worst).
-        let pictureWidth = max(0, width - 2 * Self.margin)
-        let natural = (pictureWidth / Self.aspect).rounded(.down)
-        let pictureHeight = min(natural, max(0, height - Self.fixedHeight - Self.minTrackpad))
-        // Larger Picture: every point above the keyboard but the rows', in whole points; the
-        // keyboard's footprint is never less than the least trackpad and its margin.
-        let footprint = keyboard.map { max($0, Self.minTrackpad + Self.bottom) }
-        let largerHeight = footprint.map { max(0, (height - $0 - Self.largerFixedHeight).rounded(.down)) }
-        picture = CGRect(x: Self.margin, y: Self.margin, width: pictureWidth, height: largerHeight ?? pictureHeight)
+    init(size: CGSize, fold: FoldInfo = .inferred, keyboardTop: CGFloat? = nil,
+         aspect: CGFloat = StreamLayout.defaultAspect, hasMenus: Bool = false) {
+        let W = max(0, size.width), H = max(0, size.height)
+        self.size = CGSize(width: W, height: H)
+        let landscape = W > H
+        self.isLandscape = landscape
+        let a = (aspect.isFinite && aspect > 0) ? aspect : Self.defaultAspect
+        let kb: CGFloat? = keyboardTop.flatMap { ($0.isFinite && $0 < H) ? max(0, $0) : nil }
+        self.keyboardTop = kb
 
-        // Row 1: five equal buttons across the row, `gap` apart, centred in their band.
-        let rowWidth = max(0, width - 2 * Self.side)
-        row1 = CGRect(x: Self.side, y: picture.maxY + Self.margin + Self.underPicture + Self.band,
-                      width: rowWidth, height: Self.buttonHeight)
-        buttons = Self.split(row1, count: Button.allCases.count, gap: Self.gap)
+        if landscape {
+            // MARK: Landscape
+            self.bar = nil
+            self.strip = nil
+            if let kb {
+                // Keyboard up: rail hides; picture on the left (~55%) and trackpad on the right above the modifier row.
+                self.rail = nil
+                self.appsButton = nil
+                self.menusButton = nil
+                self.keyboardButton = nil
+                self.settingsButton = nil
 
-        let settingsButton = buttons[Button.settings.rawValue]
-        if footprint == nil {
-            // Row 2: the strip, under row 1's band, wider than the rows by its own padding. With the
-            // Mac's menus, the Menus button under Settings, and the strip up to `gap` before it.
-            strip = CGRect(x: Self.side - Self.stripInset, y: row1.maxY + Self.band + Self.rowGap,
-                           width: max(0, width - 2 * (Self.side - Self.stripInset)), height: Self.stripHeight)
-            menus = CGRect(x: settingsButton.minX, y: strip.minY + (Self.stripHeight - Self.buttonHeight) / 2,
-                           width: settingsButton.width, height: Self.buttonHeight)
-            stripBesideMenus = CGRect(x: strip.minX, y: strip.minY, width: max(0, menus.minX - Self.gap - strip.minX), height: strip.height)
-            buttonsBesideMenus = buttons
+                let (topM, rGap, kbG) = Self.landscapeKeyboardGaps(floor: kb)
+                let keysH = min(Self.capHeight, max(0, kb - kbG))
+                let keysY = max(0, kb - kbG - keysH)
+                let areaH = max(0, keysY - rGap - topM)
+
+                let vBand = fold.verticalBand
+                let splitFold: (left: CGFloat, right: CGFloat)? = vBand.flatMap { band in
+                    let l = max(0, band.minX.rounded(.down))
+                    let r = min(W, band.maxX.rounded(.up))
+                    guard l - Self.side - Self.rowGap >= 44, W - Self.side - (r + Self.rowGap) >= 44 else { return nil }
+                    return (l, r)
+                }
+
+                if let split = splitFold {
+                    let leadKeys = CGRect(x: Self.side, y: keysY, width: max(0, split.left - Self.side - Self.rowGap), height: keysH)
+                    let trailKeys = CGRect(x: split.right + Self.rowGap, y: keysY,
+                                           width: max(0, W - Self.side - (split.right + Self.rowGap)), height: keysH)
+                    self.keys = leadKeys
+                    self.keysTrailing = trailKeys
+                    self.showsArrows = true
+                    self.showsKeyboardCap = true
+                    self.caps = Self.split(leadKeys, count: Self.baseCapCount, gap: Self.keyGap)
+                        + Self.split(trailKeys, count: Self.arrowCapCount + 1, gap: Self.keyGap)
+
+                    let room = CGRect(x: Self.margin, y: topM, width: max(0, split.left - 2 * Self.margin), height: areaH)
+                    self.pictureRoom = room
+                    self.picture = Self.aspectFit(a, in: room, centerVertically: true)
+                    let pad = CGRect(x: split.right + Self.rowGap, y: topM,
+                                     width: max(0, W - Self.side - (split.right + Self.rowGap)), height: areaH)
+                    self.trackpad = pad
+                    self.trackpadSpan = pad.width / a
+
+                    let panelH = max(0, keysY - Self.panelGap - Self.margin)
+                    self.drawer = CGRect(x: Self.margin, y: Self.margin, width: min(380, room.width), height: panelH)
+                    self.settings = CGRect(x: Self.margin, y: Self.margin, width: min(360, room.width), height: panelH)
+                } else {
+                    let keysRect = CGRect(x: Self.side, y: keysY, width: max(0, W - 2 * Self.side), height: keysH)
+                    self.keys = keysRect
+                    self.keysTrailing = nil
+                    let arrows = keysRect.width >= Self.wideKeysMinWidth
+                    self.showsArrows = arrows
+                    self.showsKeyboardCap = true
+                    let count = Self.baseCapCount + (arrows ? Self.arrowCapCount : 0) + 1
+                    self.caps = Self.split(keysRect, count: count, gap: Self.keyGap)
+
+                    let availW = max(0, W - Self.margin - Self.side - Self.rowGap)
+                    let picRoomW = (availW * Self.landscapePictureShare).rounded(.down)
+                    let room = CGRect(x: Self.margin, y: topM, width: picRoomW, height: areaH)
+                    self.pictureRoom = room
+                    self.picture = Self.aspectFit(a, in: room, centerVertically: true)
+                    let padX = room.maxX + Self.rowGap
+                    let pad = CGRect(x: padX, y: topM, width: max(0, W - Self.side - padX), height: areaH)
+                    self.trackpad = pad
+                    self.trackpadSpan = pad.width / a
+
+                    let panelH = max(0, keysY - Self.panelGap - Self.margin)
+                    self.drawer = CGRect(x: Self.side, y: Self.margin, width: min(380, max(0, W - 2 * Self.side)), height: panelH)
+                    self.settings = CGRect(x: max(Self.side, W - Self.side - min(360, max(0, W - 2 * Self.side))),
+                                           y: Self.margin, width: min(360, max(0, W - 2 * Self.side)), height: panelH)
+                }
+                self.settingsAnchor = CGPoint(x: W > 0 ? self.settings.minX / W : 0, y: H > 0 ? self.settings.minY / H : 0)
+                self.dim = [CGRect(origin: .zero, size: CGSize(width: W, height: H))]
+            } else {
+                // Keyboard down: slim leading vertical rail + full picture with direct touch.
+                let railRect = CGRect(x: 0, y: 0, width: min(Self.railWidth, W), height: H)
+                self.rail = railRect
+                let buttons = Self.railButtons(in: railRect, hasMenus: hasMenus)
+                self.appsButton = buttons.apps
+                self.menusButton = buttons.menus
+                self.keyboardButton = buttons.keyboard
+                self.settingsButton = buttons.settings
+
+                let room = CGRect(x: railRect.maxX + Self.margin, y: Self.margin,
+                                  width: max(0, W - railRect.maxX - 2 * Self.margin),
+                                  height: max(0, H - 2 * Self.margin))
+                self.pictureRoom = room
+                self.picture = Self.aspectFit(a, in: room, centerVertically: true)
+                self.trackpad = nil
+                self.trackpadSpan = 0
+                self.keys = nil
+                self.keysTrailing = nil
+                self.showsArrows = false
+                self.showsKeyboardCap = false
+                self.caps = []
+
+                let panelX = railRect.maxX + Self.panelGap
+                let maxLeading = fold.verticalBand.map { max(0, $0.minX.rounded(.down) - Self.panelGap - panelX) }
+                    ?? max(0, W - Self.margin - panelX)
+                let panelH = max(0, H - 2 * Self.margin)
+                self.drawer = CGRect(x: panelX, y: Self.margin, width: min(380, maxLeading), height: panelH)
+                self.settings = CGRect(x: panelX, y: Self.margin, width: min(360, maxLeading), height: panelH)
+                self.settingsAnchor = CGPoint(x: W > 0 ? panelX / W : 0,
+                                              y: H > 0 ? (buttons.settings.midY) / H : 0)
+                self.dim = [CGRect(x: railRect.maxX, y: 0, width: max(0, W - railRect.maxX), height: H)]
+            }
+            return
+        }
+
+        // MARK: Portrait
+        self.rail = nil
+        self.keysTrailing = nil
+        let rowWidth = max(0, W - 2 * Self.side)
+        let pictureMaxWidth = max(0, W - 2 * Self.margin)
+        let hBand = fold.horizontalBand
+        let foldBounds: (top: CGFloat, bottom: CGFloat)? = hBand.map {
+            let t = max(0, $0.minY.rounded(.down))
+            let b = min(H, $0.maxY.rounded(.up))
+            return (t, max(t, b))
+        }
+
+        if let kb {
+            // Keyboard up: bar hides; hide-keyboard cap joins the modifier row.
+            self.bar = nil
+            self.appsButton = nil
+            self.strip = nil
+            self.menusButton = nil
+            self.keyboardButton = nil
+            self.settingsButton = nil
+
+            let arrows = rowWidth >= Self.wideKeysMinWidth
+            self.showsArrows = arrows
+            self.showsKeyboardCap = true
+            let capCount = Self.baseCapCount + (arrows ? Self.arrowCapCount : 0) + 1
+
+            if let f = foldBounds, kb - f.bottom >= Self.belowFoldMinForKeyboard {
+                // Laptop pose with a short keyboard: picture above the fold, trackpad + modifier row below it.
+                let room = CGRect(x: Self.margin, y: Self.margin, width: pictureMaxWidth,
+                                  height: max(0, f.top - 2 * Self.margin))
+                self.pictureRoom = room
+                self.picture = Self.aspectFit(a, in: room, centerVertically: false)
+                let keysRect = CGRect(x: Self.side, y: kb - Self.keyboardGap - Self.capHeight,
+                                      width: rowWidth, height: Self.capHeight)
+                let padTop = f.bottom + Self.rowGap
+                let pad = CGRect(x: Self.side, y: padTop, width: rowWidth,
+                                 height: max(0, keysRect.minY - Self.rowGap - padTop))
+                self.keys = keysRect
+                self.caps = Self.split(keysRect, count: capCount, gap: Self.keyGap)
+                self.trackpad = pad
+                self.trackpadSpan = pad.width / a
+            } else {
+                // Continuous portrait (or laptop pose lifted above the fold when lower half cannot hold trackpad + keys).
+                let floor = foldBounds.map { min(kb, $0.top) } ?? kb
+                if floor >= Self.portraitFixedUp + Self.minTrackpad {
+                    let maxPicH = floor - Self.portraitFixedUp - Self.minTrackpad
+                    let maxRoom = CGRect(x: Self.margin, y: Self.margin, width: pictureMaxWidth, height: maxPicH)
+                    let pic = Self.aspectFit(a, in: maxRoom, centerVertically: false)
+                    self.pictureRoom = CGRect(x: Self.margin, y: Self.margin, width: pictureMaxWidth, height: pic.height)
+                    self.picture = pic
+                    let keysRect = CGRect(x: Self.side, y: floor - Self.keyboardGap - Self.capHeight,
+                                          width: rowWidth, height: Self.capHeight)
+                    let padTop = pic.maxY + Self.rowGap
+                    let pad = CGRect(x: Self.side, y: padTop, width: rowWidth,
+                                     height: max(0, keysRect.minY - Self.rowGap - padTop))
+                    self.keys = keysRect
+                    self.caps = Self.split(keysRect, count: capCount, gap: Self.keyGap)
+                    self.trackpad = pad
+                    self.trackpadSpan = pad.width / a
+                } else {
+                    // Extreme short floor: picture drops to zero, shrink gaps before trackpad goes under 75 pt.
+                    self.pictureRoom = CGRect(x: Self.margin, y: Self.margin, width: pictureMaxWidth, height: 0)
+                    self.picture = CGRect(x: Self.margin, y: Self.margin, width: 0, height: 0)
+                    if floor >= Self.minTrackpad + Self.capHeight {
+                        let slack = floor - Self.minTrackpad - Self.capHeight
+                        let kbG = min(Self.keyboardGap, (slack / 2).rounded(.down))
+                        let rGap = min(Self.rowGap, slack - kbG)
+                        let keysRect = CGRect(x: Self.side, y: floor - kbG - Self.capHeight,
+                                              width: rowWidth, height: Self.capHeight)
+                        let padTop = max(0, keysRect.minY - rGap - Self.minTrackpad)
+                        let pad = CGRect(x: Self.side, y: padTop, width: rowWidth, height: Self.minTrackpad)
+                        self.keys = keysRect
+                        self.caps = Self.split(keysRect, count: capCount, gap: Self.keyGap)
+                        self.trackpad = pad
+                        self.trackpadSpan = pad.width / a
+                    } else {
+                        let keysH = min(Self.capHeight, floor)
+                        let keysRect = CGRect(x: Self.side, y: max(0, floor - keysH), width: rowWidth, height: keysH)
+                        let pad = CGRect(x: Self.side, y: 0, width: rowWidth, height: max(0, keysRect.minY))
+                        self.keys = keysRect
+                        self.caps = Self.split(keysRect, count: capCount, gap: Self.keyGap)
+                        self.trackpad = pad
+                        self.trackpadSpan = pad.width / a
+                    }
+                }
+            }
+
+            let floor = foldBounds.map { min(kb, $0.top) } ?? kb
+            let panelTop = Self.margin
+            let panelBottom = max(panelTop, min(self.keys?.minY ?? floor, floor) - Self.panelGap)
+            let drawerW = min(380, rowWidth)
+            let settingsW = min(360, rowWidth)
+            self.drawer = CGRect(x: Self.side, y: panelTop, width: drawerW, height: panelBottom - panelTop)
+            self.settings = CGRect(x: Self.side + rowWidth - settingsW, y: panelTop, width: settingsW, height: panelBottom - panelTop)
+            self.settingsAnchor = CGPoint(x: W > 0 ? self.settings.maxX / W : 1, y: H > 0 ? self.settings.minY / H : 0)
+            self.dim = [CGRect(origin: .zero, size: CGSize(width: W, height: H))]
+            return
+        }
+
+        // Portrait, keyboard down: picture, one bar, trackpad, modifier row.
+        let arrows = rowWidth >= Self.wideKeysMinWidth
+        self.showsArrows = arrows
+        self.showsKeyboardCap = false
+        let capCount = Self.baseCapCount + (arrows ? Self.arrowCapCount : 0)
+
+        let barRect: CGRect
+        let keysRect: CGRect
+        let padRect: CGRect
+
+        if let f = foldBounds {
+            // Laptop pose, keyboard down: picture above the fold; bar, trackpad and modifier row below it.
+            let room = CGRect(x: Self.margin, y: Self.margin, width: pictureMaxWidth,
+                              height: max(0, f.top - 2 * Self.margin))
+            self.pictureRoom = room
+            self.picture = Self.aspectFit(a, in: room, centerVertically: false)
+            barRect = CGRect(x: Self.side, y: f.bottom + Self.rowGap, width: rowWidth, height: Self.barHeight)
+            keysRect = CGRect(x: Self.side, y: max(barRect.maxY + Self.rowGap, H - Self.bottom - Self.capHeight),
+                              width: rowWidth, height: Self.capHeight)
+            let padTop = barRect.maxY + Self.rowGap
+            padRect = CGRect(x: Self.side, y: padTop, width: rowWidth,
+                             height: max(0, keysRect.minY - Self.rowGap - padTop))
         } else {
-            // Larger Picture: no strip, so the key row comes straight under row 1's band; the Menus
-            // button joins row 1 after Apps, six sharing the row.
-            let six = Self.split(row1, count: Button.allCases.count + 1, gap: Self.gap)
-            let gone = CGRect(origin: CGPoint(x: Self.side - Self.stripInset, y: row1.maxY + Self.band),
-                              size: CGSize(width: max(0, width - 2 * (Self.side - Self.stripInset)), height: 0))
-            strip = gone
-            stripBesideMenus = gone
-            menus = six[1]
-            buttonsBesideMenus = [six[0]] + six.dropFirst(2)
+            let maxPicH = max(0, H - Self.portraitFixedDown - Self.minTrackpad)
+            let maxRoom = CGRect(x: Self.margin, y: Self.margin, width: pictureMaxWidth, height: maxPicH)
+            let pic = Self.aspectFit(a, in: maxRoom, centerVertically: false)
+            self.pictureRoom = CGRect(x: Self.margin, y: Self.margin, width: pictureMaxWidth, height: pic.height)
+            self.picture = pic
+            barRect = CGRect(x: Self.side, y: pic.maxY + Self.rowGap, width: rowWidth, height: Self.barHeight)
+            keysRect = CGRect(x: Self.side, y: max(barRect.maxY + Self.rowGap, H - Self.bottom - Self.capHeight),
+                              width: rowWidth, height: Self.capHeight)
+            let padTop = barRect.maxY + Self.rowGap
+            padRect = CGRect(x: Self.side, y: padTop, width: rowWidth,
+                             height: max(0, keysRect.minY - Self.rowGap - padTop))
         }
 
-        // Row 3: six equal caps, `gap` apart.
-        keys = CGRect(x: Self.side, y: strip.maxY + Self.rowGap, width: rowWidth, height: Self.capHeight)
-        caps = Self.split(keys, count: Self.capCount, gap: Self.gap)
+        self.bar = barRect
+        let barParts = Self.portraitBarParts(in: barRect, hasMenus: hasMenus)
+        self.appsButton = barParts.apps
+        self.strip = barParts.strip
+        self.menusButton = barParts.menus
+        self.keyboardButton = barParts.keyboard
+        self.settingsButton = barParts.settings
 
-        // The trackpad: the rest, to `bottom` above the screen's edge. With Larger Picture the
-        // keyboard's footprint, from its top (`keyboardClearance` under the key row).
-        var padTop = keys.maxY + Self.rowGap
-        if let footprint { padTop = max(keys.maxY + Self.keyboardClearance, height - footprint) }
-        trackpad = CGRect(x: Self.side, y: padTop, width: rowWidth, height: max(0, height - Self.bottom - padTop))
-        trackpadSpan = trackpad.width / Self.aspect
+        self.keys = keysRect
+        self.caps = Self.split(keysRect, count: capCount, gap: Self.keyGap)
+        self.trackpad = padRect
+        self.trackpadSpan = padRect.width / a
 
-        // The ruler, centred on Aa: as wide as the room between Aa's centre and the row's leading
-        // edge allows, at most `maxRulerStep` a detent.
-        (ruler, rulerStep) = Self.ruler(on: buttons[Button.textSize.rawValue], in: row1)
-        (rulerBesideMenus, rulerStepBesideMenus) = Self.ruler(on: buttonsBesideMenus[Button.textSize.rawValue], in: row1)
+        let panelTop = barRect.maxY + Self.panelGap
+        let panelH = max(0, H - Self.bottom - panelTop)
+        let drawerW = rowWidth >= 520 ? min(380, rowWidth) : rowWidth
+        let settingsW = rowWidth >= 520 ? min(360, rowWidth) : rowWidth
+        self.drawer = CGRect(x: Self.side, y: panelTop, width: drawerW, height: panelH)
+        self.settings = CGRect(x: Self.side + rowWidth - settingsW, y: panelTop, width: settingsW, height: panelH)
+        self.settingsAnchor = CGPoint(x: W > 0 ? self.settings.maxX / W : 1, y: H > 0 ? self.settings.minY / H : 0)
+        self.dim = [CGRect(x: 0, y: 0, width: W, height: barRect.minY),
+                    CGRect(x: 0, y: barRect.maxY, width: W, height: max(0, H - barRect.maxY))]
+    }
 
-        // The drawer and the panel hang under row 1 and span it, down to the trackpad's bottom. With
-        // Larger Picture the drawer opens upward instead, over the picture's room to `panelGap` above
-        // row 1: under row 1 is the keyboard's footprint, so a keyboard up (the Mac's, or the one the
-        // drawer's own search field brings) would leave only the search field in view there. The
-        // panel stays under row 1: opening it takes the keyboard down, and the picture stays in view.
-        let panelTop = row1.maxY + Self.panelGap
-        let panelHeight = max(0, height - Self.bottom - panelTop)
-        if footprint == nil {
-            drawer = CGRect(x: Self.side, y: panelTop, width: rowWidth, height: panelHeight)
-        } else {
-            drawer = CGRect(x: Self.side, y: Self.margin, width: rowWidth, height: max(0, row1.minY - Self.panelGap - Self.margin))
+    /// The stable viewport size to send the Mac (keyboard-down picture pane, so showing or hiding the
+    /// software keyboard never resizes the Mac window or restarts the stream).
+    static func viewportSize(for size: CGSize, fold: FoldInfo) -> CGSize {
+        let base = StreamLayout(size: size, fold: fold, keyboardTop: nil, aspect: defaultAspect)
+        if base.isLandscape || fold.horizontalBand != nil {
+            return base.pictureRoom.size
         }
-        settings = CGRect(x: Self.side, y: panelTop, width: rowWidth, height: panelHeight)
-        settingsAnchor = CGPoint(x: width > 0 ? settings.maxX / width : 1, y: height > 0 ? settings.minY / height : 0)
-
-        dim = [CGRect(x: 0, y: 0, width: width, height: row1.minY),
-               CGRect(x: 0, y: row1.maxY, width: width, height: max(0, height - row1.maxY))]
+        return base.picture.size
     }
 
-    /// The frame the video is drawn in, for a picture of `video`'s shape (pixels; zero before the
-    /// first frame, taken as 16:10): `picture` in the standard arrangement, whatever the video. With
-    /// Larger Picture the picture's own shape inside the room, from its top: as wide as the room and
-    /// as tall as the shape asks (a 16:10 window keeps its shape, a taller one gains), or, for a
-    /// shape taller than the room, as tall as the room and centred across it. Whole points, rounded
-    /// down past a hundredth of a point, so a window the Mac fitted to the room fills it exactly.
-    func pane(video: CGSize) -> CGRect {
-        guard largerPicture, picture.width > 0, picture.height > 0 else { return picture }
-        let known = video.width > 0 && video.height > 0
-        let (w, h) = known ? (video.width, video.height) : (Self.aspect, 1)
-        let tall = picture.width * h / w
-        if tall <= picture.height + 0.01 {
-            return CGRect(x: picture.minX, y: picture.minY, width: picture.width,
-                          height: min(picture.height, (tall + 0.01).rounded(.down)))
+    /// Resolves the screen-local keyboard top edge from `KeyboardFrameMonitor` and `DuoPosture.keyboardGlass`.
+    /// Nil while the keyboard is down. In the Duo's laptop pose, falls back to the reported fold-top edge
+    /// while a reload reading settles, so picture, trackpad and modifier row sit cleanly above the fold
+    /// immediately without flashing.
+    static func keyboardTop(reported: CGRect?, read: CGRect?, size: CGSize, origin: CGPoint, fold: FoldInfo) -> CGFloat? {
+        guard let reported else { return nil }
+        let localReported = reported.minY - origin.y
+        guard localReported < size.height else { return nil }
+        let laptop = fold.horizontalBand != nil && size.height >= size.width
+        let controlsTop = fold.horizontalBand.map { min(size.height, $0.maxY.rounded(.up)) } ?? 0
+        let localRead = read.map { $0.offsetBy(dx: -origin.x, dy: -origin.y) }
+        guard let glass = DuoPosture.keyboardGlass(reported: localReported, read: localRead, size: size,
+                                                   controlsTop: controlsTop, laptop: laptop) else { return nil }
+        return glass.top ?? localReported
+    }
+
+    /// Aspect-fit rectangle of shape `aspect` (width / height) inside `room`, in whole points.
+    static func aspectFit(_ aspect: CGFloat, in room: CGRect, centerVertically: Bool = false) -> CGRect {
+        guard room.width > 0, room.height > 0 else { return CGRect(origin: room.origin, size: .zero) }
+        let a = (aspect.isFinite && aspect > 0) ? aspect : defaultAspect
+        let tall = (room.width / a).rounded(.down)
+        if tall <= room.height {
+            let h = max(1, min(room.height, tall))
+            let y = centerVertically ? room.minY + ((room.height - h) / 2).rounded(.down) : room.minY
+            return CGRect(x: room.minX, y: y, width: room.width, height: h)
         }
-        let wide = min(picture.width, (picture.height * w / h + 0.01).rounded(.down))
-        return CGRect(x: picture.minX + ((picture.width - wide) / 2).rounded(.down), y: picture.minY,
-                      width: wide, height: picture.height)
+        let w = min(room.width, max(1, (room.height * a).rounded(.down)))
+        let x = room.minX + ((room.width - w) / 2).rounded(.down)
+        return CGRect(x: x, y: room.minY, width: w, height: room.height)
     }
 
-    /// What the pad's vertical motion is measured against for a picture of `video`'s shape:
-    /// `trackpadSpan` in the standard arrangement (its width ÷ 1.6, whatever the picture). With
-    /// Larger Picture the picture's own shape (its frame, `pane(video:)`): the pad's width across
-    /// moves the pointer the frame's width, and the span down its height, so the pointer moves as far
-    /// down as across whatever the window's shape.
-    func trackpadSpan(video: CGSize) -> CGFloat {
-        guard largerPicture else { return trackpadSpan }
-        let frame = pane(video: video)
-        guard frame.width > 0, frame.height > 0 else { return trackpadSpan }
-        return trackpad.width * frame.height / frame.width
+    /// Portrait bar parts: Apps | scrolling window thumbnails | [Menus] | Keyboard | Settings.
+    private static func portraitBarParts(in bar: CGRect, hasMenus: Bool)
+    -> (apps: CGRect, strip: CGRect, menus: CGRect?, keyboard: CGRect, settings: CGRect) {
+        let btnW: CGFloat = bar.width >= 520 ? 56 : (bar.width >= 320 ? 48 : 44)
+        let gap: CGFloat = bar.width >= 520 ? 8 : 6
+        let btnH = min(barButtonHeight, bar.height)
+        let btnY = bar.minY + ((bar.height - btnH) / 2).rounded(.down)
+
+        let apps = CGRect(x: bar.minX, y: btnY, width: btnW, height: btnH)
+        let settings = CGRect(x: max(bar.minX, bar.maxX - btnW), y: btnY, width: btnW, height: btnH)
+        let keyboard = CGRect(x: max(bar.minX, settings.minX - gap - btnW), y: btnY, width: btnW, height: btnH)
+
+        let menusCandidate = CGRect(x: keyboard.minX - gap - btnW, y: btnY, width: btnW, height: btnH)
+        let stripStart = apps.maxX + gap
+        let menus: CGRect? = hasMenus && (menusCandidate.minX - gap - stripStart >= minStripWidth) ? menusCandidate : nil
+        let stripEnd = (menus ?? keyboard).minX - gap
+        let strip = CGRect(x: stripStart, y: bar.minY, width: max(0, stripEnd - stripStart), height: bar.height)
+        return (apps, strip, menus, keyboard, settings)
     }
 
-    /// The software keyboard's height on a phone whose stream screen is `container` (its screen less
-    /// the top inset), upright: from the shape and the width, as measured (see `homeButtonKeyboard`).
-    static func keyboardHeight(for container: CGSize) -> CGFloat {
-        guard container.width > 0, container.height / container.width >= faceIDShape else { return homeButtonKeyboard }
-        if container.width >= wideKeyboardFrom { return wideKeyboard }
-        if container.width >= faceIDKeyboardFrom { return faceIDKeyboard }
-        if container.width >= miniKeyboardFrom { return miniKeyboard }
-        return wideKeyboard
+    /// Landscape leading rail buttons: Apps, [Menus], Keyboard, Settings stacked vertically.
+    private static func railButtons(in rail: CGRect, hasMenus: Bool)
+    -> (apps: CGRect, menus: CGRect?, keyboard: CGRect, settings: CGRect) {
+        let count = hasMenus ? 4 : 3
+        let maxBtnW = min(railButtonSize, max(0, rail.width - 8))
+        let availH = max(0, rail.height - 2 * railTop)
+        let gap = min(railGap, availH > CGFloat(count) * maxBtnW ? railGap : 4)
+        let btnSize = min(maxBtnW, max(0, ((availH - CGFloat(count - 1) * gap) / CGFloat(count)).rounded(.down)))
+        let x = rail.minX + ((rail.width - btnSize) / 2).rounded(.down)
+        var y = rail.minY + railTop
+        func next() -> CGRect {
+            let r = CGRect(x: x, y: y, width: btnSize, height: btnSize)
+            y += btnSize + gap
+            return r
+        }
+        let apps = next()
+        let menus = hasMenus ? next() : nil
+        let keyboard = next()
+        let settings = next()
+        return (apps, menus, keyboard, settings)
     }
 
-    /// What streams, as Larger Picture sees it: nothing (connecting, before the Desktop starts; a window
-    /// closed, or off the Mac's list for a moment; a pick that failed), the Mac's whole Desktop, or a
-    /// window: `StreamClient.active`'s three cases (StreamScreen maps them).
-    enum Streaming: CaseIterable { case nothing, desktop, window }
-
-    /// Larger Picture in effect: the switch on while a window streams, the one rule for everything the
-    /// switch decides (the arrangement, its viewport, the tour's targets and words), which
-    /// `keyboard(for:largerPicture:foldable:)` then places. The Desktop keeps the standard arrangement
-    /// (Noah, 2026-10-15, on his iPhone 15 Pro: "when in Desktop mode, there is negative space on the
-    /// bottom, seemingly because of the Mac aspect ratio"): Aa never resizes the Desktop, so the room's
-    /// extra height could only ever be black under it. So does nothing streaming, so the Desktop a
-    /// device asks for then (as it connects, and once a window has closed) arrives into the
-    /// arrangement it keeps, with no flip after its first picture. The Mac never passes through
-    /// nothing between two windows (it names the old one until the new one streams), so a switch
-    /// from window to window keeps Larger Picture throughout.
-    static func largerPicture(switchOn: Bool, streaming: Streaming) -> Bool {
-        switchOn && streaming == .window
-    }
-
-    /// Larger Picture's keyboard for a stream screen of `container`: its estimate while Larger Picture
-    /// is in effect (`largerPicture`: `largerPicture(switchOn:streaming:)`, which the stream screen
-    /// holds while its Settings panel is open), on a phone without a hinge, where Larger Picture earns
-    /// its name (`largerPictureGains`); nil (the standard arrangement) with the switch off, while the
-    /// Desktop or nothing streams, on the iPhone Duo (`foldable`), whose cover's keyboard nobody has
-    /// measured, and where the picture would not be larger.
-    static func keyboard(for container: CGSize, largerPicture: Bool, foldable: Bool) -> CGFloat? {
-        guard largerPicture, !foldable else { return nil }
-        let keyboard = keyboardHeight(for: container)
-        return largerPictureGains(container, keyboard: keyboard) ? keyboard : nil
-    }
-
-    /// Whether Larger Picture above a keyboard `keyboard` tall earns its name on a stream screen of
-    /// `container`: its room taller than today's picture, and row 1's six buttons a touch target wide
-    /// (`minButtonWidth`). Not so where Display Zoom makes the screen 320 pt wide (the SE, the minis
-    /// and the 6.1-inch iPhones): a 6.1-inch one's room would be 304×173 against today's 304×190, the
-    /// zoomed SE's 304×163 against 304×188, and six buttons 42 pt. There the layout stays today's and
-    /// the Settings panel has no switch (`offersLargerPicture`).
-    static func largerPictureGains(_ container: CGSize, keyboard: CGFloat) -> Bool {
-        let larger = PhonePortraitLayout(size: container, keyboard: keyboard)
-        return larger.picture.height > PhonePortraitLayout(size: container).picture.height
-            && larger.menus.width >= minButtonWidth
-    }
-
-    /// Whether the Settings panel offers Larger Picture on a phone (without a hinge) whose stream
-    /// screen is `screen` now, in either orientation: judged on it held upright, the shorter side
-    /// across, and whatever streams: as for a window, the only source it acts on (the Desktop keeps
-    /// the standard arrangement with the switch on, `largerPicture(switchOn:streaming:)`). On its
-    /// side the stream screen's longer side is short of the upright one by the side insets (a notch's
-    /// 44 to 68 pt each, none on an SE), which leaves the answer the same on every iPhone, zoomed or
-    /// not (Tests/checks/phone-portrait).
-    static func offersLargerPicture(screen: CGSize) -> Bool {
-        let upright = CGSize(width: min(screen.width, screen.height), height: max(screen.width, screen.height))
-        return keyboard(for: upright, largerPicture: true, foldable: false) != nil
-    }
-
-    /// The ruler centred on `aa`, over `row`: as wide as the room between Aa's centre and the row's
-    /// leading edge allows, at most `maxRulerStep` a detent.
-    private static func ruler(on aa: CGRect, in row: CGRect) -> (CGRect, CGFloat) {
-        let room = (aa.midX - row.minX) * 2 - 2 * rulerInset
-        let rulerStep = max(0, min(maxRulerStep, room / rulerSpans))
-        let rulerWidth = rulerStep * rulerSpans + 2 * rulerInset
-        return (CGRect(x: aa.midX - rulerWidth / 2, y: row.minY, width: rulerWidth, height: buttonHeight), rulerStep)
+    /// Adaptive vertical margins in landscape with keyboard up so trackpad stays >= 75 pt whenever
+    /// `floor >= minTrackpad + capHeight`.
+    private static func landscapeKeyboardGaps(floor: CGFloat) -> (top: CGFloat, rowGap: CGFloat, keyboardGap: CGFloat) {
+        if floor >= margin + minTrackpad + rowGap + capHeight + keyboardGap {
+            return (margin, rowGap, keyboardGap)
+        }
+        guard floor >= minTrackpad + capHeight else { return (0, 0, 0) }
+        let slack = floor - minTrackpad - capHeight
+        let kbG = min(keyboardGap, (slack / 3).rounded(.down))
+        let rGap = min(rowGap, ((slack - kbG) / 2).rounded(.down))
+        let topM = min(margin, slack - kbG - rGap)
+        return (topM, rGap, kbG)
     }
 
     /// `count` equal parts of `row`, `gap` apart, filling it.
-    private static func split(_ row: CGRect, count: Int, gap: CGFloat) -> [CGRect] {
+    static func split(_ row: CGRect, count: Int, gap: CGFloat) -> [CGRect] {
+        guard count > 0 else { return [] }
         let each = max(0, (row.width - CGFloat(count - 1) * gap) / CGFloat(count))
         return (0..<count).map { i in
             CGRect(x: row.minX + CGFloat(i) * (each + gap), y: row.minY, width: each, height: row.height)

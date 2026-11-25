@@ -42,15 +42,6 @@ struct Trackpad: View {
                          latched: latched, onModifiersConsumed: onModifiersConsumed,
                          verticalSpan: verticalSpan, sendGesture: sendGesture,
                          readZoom: readZoom, writeZoom: writeZoom)
-            VStack {
-                Spacer(minLength: 0)
-                Text("Drag to move the pointer. Tap to click, two fingers to scroll.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Palette.muted)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(18)
-            .allowsHitTesting(false)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(shape)

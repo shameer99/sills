@@ -45,8 +45,10 @@ struct MacMenuButton: View {
                     .foregroundStyle(open ? Palette.accent : Palette.text)
                     .frame(height: iconBox)
                 Text("Menus")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(open ? Palette.accent : Palette.barLabel)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
         }
         .allowsHitTesting(false)

@@ -646,7 +646,6 @@ struct LayoutHarness: View {
         let size: CGSize
         let drawerOpen: Bool
         let keyboardShown: Bool
-        let scaleOpen: Bool
         let textScale: Double?
         let live: Bool
         /// What the mock should be streaming. Ignored when `live`.
@@ -686,7 +685,6 @@ struct LayoutHarness: View {
             return Spec(size: CGSize(width: width, height: height),
                         drawerOpen: defaults.bool(forKey: "SillDrawer"),
                         keyboardShown: defaults.bool(forKey: "SillKeyboard"),
-                        scaleOpen: defaults.bool(forKey: "SillScaleOpen"),
                         textScale: defaults.double(forKey: "SillScale") > 0 ? TextScale.scale(at: defaults.double(forKey: "SillScale")) : nil,
                         live: defaults.bool(forKey: "SillLive"),
                         mockActive: mockActive(defaults.string(forKey: "SillActive")),
@@ -848,7 +846,7 @@ struct LayoutHarness: View {
                     StreamScreen(client: live,
                                  drawerOpen: spec.drawerOpen,
                                  keyboardShown: spec.keyboardShown,
-                                 scaleOpen: spec.scaleOpen, textScale: spec.textScale,
+                                 textScale: spec.textScale,
                                  settingsOpen: spec.settingsOpen,
                                  pairingOverlay: spec.scanOverlay, scannerOverride: spec.scanOverlay ? .placeholder : nil)
                 } else {
@@ -865,7 +863,7 @@ struct LayoutHarness: View {
             StreamScreen(client: mock,
                          drawerOpen: spec.drawerOpen,
                          keyboardShown: spec.keyboardShown,
-                         scaleOpen: spec.scaleOpen, textScale: spec.textScale,
+                         textScale: spec.textScale,
                          settingsOpen: spec.settingsOpen,
                          pairingOverlay: spec.scanOverlay, scannerOverride: .placeholder)
         }

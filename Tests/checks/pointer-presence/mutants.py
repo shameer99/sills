@@ -58,6 +58,21 @@ MUTANTS = [
     ("a stroke ignores the anchor", "        if let anchor { cursor = Self.clamped(anchor) }\n", ""),
     ("the pad's cursor unclamped", "cursor = Self.clamped(CGPoint(x: Double(cursor.x) + dx, y: Double(cursor.y) + dy))",
      "cursor = CGPoint(x: Double(cursor.x) + dx, y: Double(cursor.y) + dy)"),
+    # Floating cursor (space-bar trackpad)
+    ("floating cursor travel 2.0", "static let travel: CGFloat = 1.25", "static let travel: CGFloat = 2.0"),
+    ("floating cursor minSpan 60", "static let minSpan: CGFloat = 120", "static let minSpan: CGFloat = 60"),
+    ("floating cursor moves while inactive", "guard let prev = last, point.x.isFinite, point.y.isFinite,",
+     "let prev = last ?? .zero\n        guard point.x.isFinite, point.y.isFinite,"),
+    ("floating cursor sends zero delta", "guard dx != 0 || dy != 0 else { return nil }", "guard true else { return nil }"),
+    ("floating cursor forgets last update", "        last = point\n        guard dx != 0 || dy != 0",
+     "        guard dx != 0 || dy != 0"),
+    ("floating cursor skips reseed catchUp", "        pad.catchUp(anchor: anchor, reseeds: reseeds)\n        pad.move(",
+     "        pad.move("),
+    ("floating cursor skips begin adopt", "        last = point\n        pad.adopt(anchor: anchor, reseeds: reseeds)",
+     "        last = point"),
+    ("floating cursor end keeps last", "    mutating func end() {\n        last = nil\n    }",
+     "    mutating func end() {\n    }"),
+    ("floating cursor accepts non-finite begin", "        guard point.x.isFinite, point.y.isFinite else { return }\n", ""),
 ]
 caught = 0
 for name, old, new in MUTANTS:

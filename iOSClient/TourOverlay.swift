@@ -227,12 +227,6 @@ struct TourOverlay: View {
     let copy: TourCopy
     let layout: TourLayout
     let targets: [TourTarget: CGRect]
-    /// False for a phone with Larger Picture in effect (a window streaming with the switch on), whose
-    /// thumbnails are hidden (TourPolicy.targets).
-    var thumbnails = true
-    /// With Larger Picture in effect, the picture's whole room, which the cards upright are placed
-    /// against (TourPolicy.place); nil elsewhere.
-    var room: CGRect? = nil
     /// The stream screen's size, and the home indicator's inset its frame runs under.
     let screen: CGSize
     let bottomInset: CGFloat
@@ -247,13 +241,13 @@ struct TourOverlay: View {
     @State private var card: TourCardReport? = nil
     @State private var nudges = 0
 
-    private var stepTargets: [CGRect] { TourPolicy.targets(run.at, layout, thumbnails: thumbnails).compactMap { targets[$0] } }
+    private var stepTargets: [CGRect] { TourPolicy.targets(run.at, layout).compactMap { targets[$0] } }
 
     private var geometry: TourGeometry {
         let found = stepTargets
         let union = found.first.map { first in found.dropFirst().reduce(first) { $0.union($1) } }
         return TourGeometry(screen: screen, layout: layout, stream: targets[.stream] ?? CGRect(origin: .zero, size: screen),
-                            room: room, bottomInset: bottomInset, targets: union, isStream: run.at == .touch,
+                            bottomInset: bottomInset, targets: union, isStream: run.at == .touch,
                             width: TourPolicy.width(screen: screen, layout: layout, accessibilityText: typeSize.isAccessibilitySize,
                                                     fold: duoFold, targets: union),
                             fold: duoFold)
@@ -312,8 +306,6 @@ struct TourGeometry: Equatable {
     var screen: CGSize
     var layout: TourLayout
     var stream: CGRect
-    /// With Larger Picture, the picture's room (TourPolicy.place).
-    var room: CGRect? = nil
     var bottomInset: CGFloat
     var targets: CGRect?
     var isStream: Bool
@@ -322,7 +314,7 @@ struct TourGeometry: Equatable {
 
     func place(height: CGFloat) -> TourPlacement {
         TourPolicy.place(card: CGSize(width: width, height: height), targets: targets, isStream: isStream,
-                         screen: screen, layout: layout, stream: stream, room: room, bottomInset: bottomInset, fold: fold)
+                         screen: screen, layout: layout, stream: stream, bottomInset: bottomInset, fold: fold)
     }
 }
 

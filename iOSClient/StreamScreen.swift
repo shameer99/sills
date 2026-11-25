@@ -206,14 +206,13 @@ struct StreamScreen: View {
     @State private var latched: KeyModifiers = []
     /// The bar's Keyboard button drives the overlay's first responder through this.
     @State private var overlay = InputOverlayProxy()
-    /// The Aa control's text scale, device points per Mac point; nil means the Mac window has never
-    /// been asked to fit (the control shows 1× for it). Up here, like `latched`, so it survives
-    /// rotation and both layouts share it.
+    /// Text scale, device points per Mac point (configured in Settings); nil means Off / 1×.
     @State private var textScale: Double? = nil
-    /// The Aa slider is unfolded (finger down): the bars fade their other buttons meanwhile.
-    @State private var scaleOpen = false
+    /// Whether the current layout shows the on-screen trackpad (always in portrait, and in landscape
+    /// while the software keyboard is up); drives `StreamClient.setPointerLayout(portrait:)`.
+    @State private var trackpadShown = false
     /// The thumbnail whose traffic-light submenu is open (held for ThumbnailHold's length, 0.5 s unless
-    /// changed in Settings; issue #113). The bars clip their content, so the submenu is drawn by this
+    /// changed in Settings; issue #113). The bar clips its content, so the submenu is drawn by this
     /// root, anchored to the thumbnail's frame.
     @State private var windowMenu: UInt32? = nil
     /// The Settings panel (the Mac's streaming settings) is open. Up here, next to the drawer, so a
@@ -257,8 +256,6 @@ struct StreamScreen: View {
     @State private var tour: TourRun? = nil
     /// Where the tour's targets are, as the layout on screen reports them.
     @State private var tourTargets: [TourTarget: CGRect] = [:]
-    /// The Keyboard toggle on the Duo's inner display (#215), while it shows: the clipboard's chip keeps clear.
-    @State private var keyboardToggleFrame: CGRect? = nil
     /// This session's first picture (the Mac's name, a frame size, a source), systemUptime.
     @State private var pictureAt: Double? = nil
     /// The layout on screen (nil until the screen has a size), and when it began.
@@ -275,16 +272,6 @@ struct StreamScreen: View {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     /// The Duo's hinge (iOS 27.1, DuoPostureReader): with the fold, the book and laptop poses.
     @Environment(\.duoEnvironment) private var duoEnvironment
-    /// This device's Larger Picture switch (the Settings panel's This iPhone; docs/larger-picture-plan.md).
-    /// It acts only while a window streams (`largerPictureNow`).
-    @AppStorage(StreamClient.largerPictureKey) private var largerPicture = false
-    /// Larger Picture as it was in effect when the Settings panel opened (`largerPictureNow`), which
-    /// the arrangement keeps until the panel closes; nil while it is closed. The panel hangs under row
-    /// 1, which the arrangement moves by the picture's growth (157 pt on an 18 Pro Max), so a change
-    /// applied at once would move the panel under the finger: the switch flipped there, or what
-    /// streams changing meanwhile (a window closed on the Mac, another device's pick). It applies as
-    /// the panel goes, in the same motion.
-    @State private var largerPictureHeld: Bool? = nil
 
     // Full screen (docs/full-screen-plan.md; FullScreenPolicy, FullScreen.swift): Sill's interface hidden, the
     // picture in the screen's room. Up here, as the drawer is, so a rotation and a trip to another app keep it;
@@ -332,22 +319,16 @@ struct StreamScreen: View {
     /// DEBUG only, for the layout harness: start on a given state so a posture can be photographed
     /// with the drawer already open. `StreamScreen(client:)` still means exactly what it did.
     init(client: StreamClient, drawerOpen: Bool = false, keyboardShown: Bool = false,
-         scaleOpen: Bool = false, textScale: Double? = nil, settingsOpen: Bool = false,
+         textScale: Double? = nil, settingsOpen: Bool = false,
          pairingOverlay: Bool = false, scannerOverride: CodeScanner.Mode? = nil) {
         self.client = client
         _drawerOpen = State(initialValue: drawerOpen)
         _keyboardShown = State(initialValue: keyboardShown)
-        _scaleOpen = State(initialValue: scaleOpen)
         _textScale = State(initialValue: textScale)
         _settingsOpen = State(initialValue: settingsOpen)
         // The panel open over the keyboard, as in a session: it took the keyboard down, and closing
         // it puts it back (`-SillSettings 1 -SillKeyboard 1`).
         _keyboardBeforeSettings = State(initialValue: settingsOpen && keyboardShown)
-        // And it holds the Larger Picture it opened with, as `setSettings` does.
-        _largerPictureHeld = State(initialValue: settingsOpen
-            ? PhonePortraitLayout.largerPicture(switchOn: UserDefaults.standard.bool(forKey: StreamClient.largerPictureKey),
-                                                streaming: .init(client.active))
-            : nil)
         _pairingOverlay = State(initialValue: pairingOverlay)
         self.scannerOverride = scannerOverride
         // `-SillFullScreen 1`: the interface hidden from the start (FullScreenDebug), and `-SillFullScreenReveal
@@ -360,30 +341,11 @@ struct StreamScreen: View {
     #endif
 
     var body: some View {
-        // Which layout, and at which size — see `DuoLayout` for the thresholds and the Duo posture
-        // behind each one.
         GeometryReader { geo in
             let duo = DuoLayout.of(geo.size)
             let layout: TourLayout = duo == .innerLandscape || duo == .outerLandscape ? .landscape
                 : (DuoLayout.drawsPhone(geo.size) ? .phone : .portrait)
-            // The fold across this screen, in its own space (iOS 27.1 on the Duo; else as before).
             let posture = DuoPosture.read(geo, duoEnvironment)
-            // Larger Picture on a phone held upright: the software keyboard its rows are kept above;
-            // none with the switch off, while the Desktop or nothing streams (`largerPictureNow`),
-            // sideways, on an iPad, on the iPhone Duo (a hinge), and where the picture would be no
-            // larger (Display Zoom at 320 pt wide). While the Settings panel is open, Larger Picture
-            // as it was in effect when it opened (`largerPictureHeld`). The arrangement, its viewport
-            // (PortraitStreamScreen's picture) and the tour's targets and words all follow from this.
-            let largerKeyboard = layout == .phone
-                ? PhonePortraitLayout.keyboard(for: geo.size, largerPicture: largerPictureHeld ?? largerPictureNow,
-                                               foldable: posture.hinge != .unknown) : nil
-            // The Settings panel's switch: on an iPhone without a hinge whose picture Larger Picture
-            // makes larger, judged on this screen held upright, whichever way it is held now.
-            let offersLarger = DuoLayout.phoneArrangement && posture.hinge == .unknown
-                && PhonePortraitLayout.offersLargerPicture(screen: geo.size)
-            // Full screen (docs/full-screen-plan.md): while hidden this reader takes the whole screen (the
-            // safe area ignored), and the picture goes in the room FullScreenPolicy gives (clear of the
-            // sensor housing, down to the bottom edge; above the fold in the Duo's laptop pose).
             let hidden = chromeHidden
             let insets = deviceInsets(geo)
             let room = FullScreenPolicy.room(size: geo.size, insets: insets, choice: Self.roomChoice,
@@ -391,31 +353,25 @@ struct StreamScreen: View {
                                              foldTop: posture.info(in: geo.size).horizontalBand?.minY)
             ZStack {
                 Group {
-                    layouts(duo, size: geo.size, posture: posture, largerKeyboard: largerKeyboard, hidden: hidden, room: room)
+                    streamLayout(hidden: hidden, room: room)
                 }
                 // Under the pairing overlay and the tour nothing takes a touch: not the bar, and
                 // not the stream's UIKit input view (nor, so, the Pencil, a hover or a key).
                 .allowsHitTesting(!overlayShown && tour == nil)
-                // The pointer sprite follows the layout: the trackpad's arrow shows only in the
-                // laptop layout, and a rotation re-renders it at once; the Mac's arrow stays. Full screen
-                // has no trackpad, so none of its arrow either.
-                .onChange(of: DuoLayout.of(geo.size).isPortrait && !hidden, initial: true) { _, portrait in
-                    client.setPointerLayout(portrait: portrait)
+                // The pointer sprite follows whether the trackpad is shown (portrait always, and
+                // landscape while the software keyboard is up); full screen has no trackpad.
+                .onChange(of: trackpadShown && !hidden, initial: true) { _, showPointer in
+                    client.setPointerLayout(portrait: showPointer)
                 }
-                // The clipboard's chip on screen or not: its 20 s run only while it is, and VoiceOver
-                // is told when it first shows (ClipboardPolicy.chipCounts).
                 .onChange(of: clipboardChipOnScreen, initial: true) { _, onScreen in
                     client.clipboardChipShown(onScreen)
                 }
                 .onChange(of: client.textFocus, initial: true) { _, focus in
                     overlay.update(textFocus: focus?.isEditable ?? false, secure: focus?.isSecure ?? false)
                 }
-                // The swipe in from the left bezel, while it drags: the interface as it will be, coming in
-                // with the finger over the hidden picture, which shows through its picture's pane.
                 if hidden, let progress = reveal {
-                    revealPreview(progress, size: geo.size, posture: posture, insets: insets)
+                    revealPreview(progress, size: geo.size, insets: insets)
                 }
-                // The hint, the first few times the interface hides: how to bring it back, by the left edge.
                 if hidden, hintShown {
                     FullScreenHint()
                         .padding(.leading, room.minX + 18)
@@ -424,15 +380,9 @@ struct StreamScreen: View {
                         .position(x: geo.size.width / 2, y: room.midY)
                         .transition(.opacity)
                 }
-                // The clipboard's chip (docs/clipboard-plan.md): a sibling after the layouts, so its
-                // Paste button and Dismiss take their touches over the stream's UIKit input view, and
-                // nothing else does (the frame around it is empty). Near the bar, off the link's line,
-                // inside the stream panel's corner; never while something is open over the stream.
                 if clipboardChipAllowed, client.clipboardChip || client.clipboardNote != nil, let panel = tourTargets[.stream] {
                     let corner = ClipboardPolicy.chipCorner(landscape: layout == .landscape, linkLineShown: streamLine != nil)
-                    // Never over the Keyboard toggle in the pane's other bottom corner (#215).
-                    let widest = corner == .bottomTrailing ? DuoPosture.clipboardChipMaxWidth(panel: panel, toggle: keyboardToggleFrame)
-                                                           : max(0, panel.width - 16)
+                    let widest = max(0, panel.width - 16)
                     ClipboardChip(client: client)
                         .frame(maxWidth: widest, alignment: .trailing)
                         .padding(8)
@@ -441,30 +391,18 @@ struct StreamScreen: View {
                         .position(x: panel.midX, y: panel.midY)
                         .transition(.opacity)
                 }
-                // The tour: a sibling above the layouts, as the pairing overlay is, and under it: an
-                // outside link puts the tour aside until the overlay has closed.
                 if let run = tour, !overlayShown {
-                    // With Larger Picture no thumbnails: the bar card is about Apps, and the cards
-                    // upright stand in the picture's whole room, the black under a short picture. The
-                    // words follow what this Mac and this device have now (TourFeatures).
-                    let features = tourFeatures(offersLarger: offersLarger)
-                    let copy = tourCopy(run, layout, keysOnItsSide: posture.onInnerDisplay,
-                                        thumbnails: largerKeyboard == nil, features: features)
+                    let features = tourFeatures()
+                    let copy = tourCopy(run, layout, keysOnItsSide: posture.onInnerDisplay, features: features)
                     TourOverlay(run: run, copy: copy,
                                 layout: layout, targets: tourTargets,
-                                thumbnails: largerKeyboard == nil,
-                                room: largerKeyboard.map { PhonePortraitLayout(size: geo.size, keyboard: $0).picture },
                                 screen: geo.size, bottomInset: geo.safeAreaInsets.bottom,
                                 next: tourNext, skip: tourSkip)
                         .transition(.opacity)
                         #if DEBUG
-                        // The console's line for the photo gates: each card's rows and what they looked at.
                         .onChange(of: Self.tourRowsLine(run, copy, features), initial: true) { _, line in print(line) }
                         #endif
                 }
-                // A sibling in the same stack, not an `.overlay`: over the stream's UIKit input
-                // view, only a sibling drawn after it received the touches (measured on the
-                // simulator: an overlay's buttons were drawn but never tapped).
                 if overlayShown {
                     PairingOverlay(client: client, scannerMode: scannerOverride ?? CodeScanner.currentMode,
                                    close: { withAnimation(.easeOut(duration: 0.2)) { pairingOverlay = false } })
@@ -472,35 +410,12 @@ struct StreamScreen: View {
             }
             .coordinateSpace(.named(TourSpace.name))
             .onPreferenceChange(TourTargetsKey.self) { tourTargets = $0 }
-            .onPreferenceChange(KeyboardToggleFrameKey.self) { keyboardToggleFrame = $0 }
             .onChange(of: layout, initial: true) { _, now in layoutChanged(to: now) }
-            // A thumbnail's lights hang from the strip, which Larger Picture's arrangement has none
-            // of: when the arrangement changes under them (what streams changed, or a turn), they
-            // close rather than wait, unseen, to come back with the strip.
-            .onChange(of: largerKeyboard != nil) { _, _ in
-                #if DEBUG
-                if windowMenu != nil { print("lights: closed, the phone's arrangement changed under them") }
-                #endif
-                closeWindowMenu()
-            }
             .background(TouchWatcher(watch: touches))
-            // Full screen's edges on the window: the swipe in from the left edge and the pointer at the edge
-            // while the interface is hidden (nothing while it shows), the shake, and whether the window covers
-            // the screen.
             .background(fullScreenEdges)
-            // The layouts and the overlays share this screen's space, and so its fold; the inner
-            // display gives the picture the status bar's strip in every pose.
             .duoFold(posture, size: geo.size, screen: "stream screen")
             .duoStatusBar(posture, size: geo.size)
             .modifier(FullScreenSystem(hidden: hidden))
-            .environment(\.largerPictureOffered, offersLarger)
-            #if DEBUG
-            // The console's line for the gates: what Larger Picture's rule made of the switch and of
-            // what streams, on a phone held upright, each time one of them or the outcome changes.
-            .onChange(of: layout == .phone ? largerPictureLine(largerKeyboard) : "", initial: true) { _, line in
-                if !line.isEmpty { print(line) }
-            }
-            #endif
         }
         .background(Color.black)
         .overlayPreferenceValue(WindowMenuAnchorKey.self) { anchor in
@@ -508,21 +423,16 @@ struct StreamScreen: View {
                 WindowLightsMenu(anchor: anchor, window: window,
                                  command: { action in client.command(action, window: id); closeWindowMenu() },
                                  dismiss: closeWindowMenu,
-                                 alwaysBelow: DuoLayout.drawsPhone)
+                                 alwaysBelow: { _ in true })
             }
         }
         .animation(.spring(duration: 0.25, bounce: 0.2), value: windowMenu)
         .onChange(of: client.pendingLink) { _, link in
-            // An outside link while streaming: the panel and the keyboard go first, as for Pair This iPad….
             if link != nil { openLinkOverlay() }
         }
         .onChange(of: scenePhase) { _, phase in
-            // A gesture cut short by a scene change never ends: put the transient UI away.
-            if phase != .active { scaleOpen = false; windowMenu = nil }
+            if phase != .active { windowMenu = nil }
         }
-        // One thing open at a time: the Aa ruler and a thumbnail's traffic lights put the Settings
-        // panel away. (Opening the panel closes them, the drawer and the keyboard.)
-        .onChange(of: scaleOpen) { _, open in if open { setSettings(false) } }
         .onChange(of: windowMenu) { _, menu in if menu != nil { setSettings(false) } }
         // Full screen takes the whole screen; otherwise the bottom alone, under the home indicator, as before.
         .ignoresSafeArea(edges: chromeHidden ? .all : .bottom)
@@ -597,7 +507,6 @@ struct StreamScreen: View {
         .onChange(of: drawerOpen) { _, _ in client.noteAction() }
         .onChange(of: settingsOpen) { _, _ in client.noteAction() }
         .onChange(of: keyboardShown) { _, _ in client.noteAction() }
-        .onChange(of: scaleOpen) { _, _ in client.noteAction() }
         .onChange(of: textScale) { _, _ in client.noteAction() }
         .onChange(of: tourCard, initial: true) { _, card in tourCardChanged(card) }
         .onChange(of: tourVoiceOver) { _, _ in carryTour(reason: "VoiceOver") }
@@ -626,9 +535,8 @@ struct StreamScreen: View {
     /// pairing overlay, the first-run tour (its dim and card; VoiceOver is on its card meanwhile).
     private var linkLineAllowed: Bool { !settingsOpen && !drawerOpen && !overlayShown && !tourOnScreen }
 
-    /// The clipboard's chip shows where the link's line may, and not over a thumbnail's lights or the
-    /// Aa ruler either (the Settings panel has its own Paste).
-    private var clipboardChipAllowed: Bool { linkLineAllowed && windowMenu == nil && !scaleOpen }
+    /// The clipboard's chip shows where the link's line may, and not over a thumbnail's lights either.
+    private var clipboardChipAllowed: Bool { linkLineAllowed && windowMenu == nil }
 
     /// The chip itself on screen, not its note in its place: its time runs only then.
     private var clipboardChipOnScreen: Bool {
@@ -681,7 +589,7 @@ struct StreamScreen: View {
             let fps = StreamClient.wantedFPS(remote: client.awayCapsFrameRate)
             #if DEBUG
             print("viewport: \(Self.points(panelSize.width))×\(Self.points(panelSize.height)) pt, scale "
-                  + (textScale.map { TextScaleControl.label($0) } ?? "off") + ", \(fps) fps")
+                  + (textScale.map { TextScale.number($0) } ?? "off") + ", \(fps) fps")
             #endif
             client.sendViewport(Viewport(width: Double(panelSize.width),
                                          height: Double(panelSize.height),
@@ -695,24 +603,6 @@ struct StreamScreen: View {
     /// screen measures 693.99…), anything else to a tenth.
     private static func points(_ value: CGFloat) -> String {
         abs(value - value.rounded()) < 0.01 ? "\(Int(value.rounded()))" : String(format: "%.1f", value)
-    }
-
-    /// `larger picture: the switch on, the Desktop streams: the standard arrangement`, or `…, a window
-    /// streams: Larger Picture above a 301 pt keyboard`, with `(held … while Settings is open)` while
-    /// the panel holds it; nothing while the switch is off and nothing is held (the other gates'
-    /// consoles stay as they were).
-    private func largerPictureLine(_ keyboard: CGFloat?) -> String {
-        guard largerPicture || largerPictureHeld != nil || keyboard != nil else { return "" }
-        let streaming: String
-        switch client.active {
-        case .none: streaming = "nothing streams"
-        case .desktop: streaming = "the Desktop streams"
-        case .window: streaming = "a window streams"
-        }
-        var line = "larger picture: the switch " + (largerPicture ? "on" : "off") + ", " + streaming + ": "
-        line += keyboard.map { "Larger Picture above a \(Self.points($0)) pt keyboard" } ?? "the standard arrangement"
-        if let held = largerPictureHeld { line += " (held " + (held ? "on" : "off") + " while Settings is open)" }
-        return line
     }
 
     /// The harness's arguments that act once the stream screen shows (ContentView's contract), once
@@ -771,17 +661,6 @@ struct StreamScreen: View {
         if dump > 0 { after(dump) { Self.accessibilityDump() } }
         // `-SillAXAction '<label>|<action>'`: half a second after the dump, that element's custom action.
         if dump > 0, let spec = defaults.string(forKey: "SillAXAction") { after(dump + 0.5) { Self.accessibilityPerform(spec) } }
-        // `-SillLargerPictureToggle <s>[,<s>…]`: Larger Picture switched at those seconds, as the
-        // Settings panel's switch does (saved; without `-Sill.largerPicture`, which would hold it).
-        let toggles = (defaults.string(forKey: "SillLargerPictureToggle") ?? "")
-            .split(whereSeparator: { $0 == "," || $0 == " " }).compactMap { Double($0) }.filter { $0 >= 0 }
-        for time in toggles {
-            after(time) {
-                largerPicture.toggle()
-                print("harness: Larger Picture switched " + (largerPicture ? "on" : "off") + " at " + Self.points(CGFloat(time)) + " s"
-                      + (largerPictureHeld != nil ? "; the Settings panel is open, so it applies when the panel closes" : ""))
-            }
-        }
         // `-SillZoom 'S@X,Y[; T S@X,Y …]'`: the picture's zoom for photos (StreamZoom): at T seconds (1
         // without one), one pinch step of factor S about that fraction of the picture's pane (its middle
         // without one), then the lift's settle, as two fingers would leave it: `2.5@0.3,0.4`, then
@@ -882,20 +761,7 @@ struct StreamScreen: View {
             let closeAt = defaults.double(forKey: "SillSettingsCloseAt")
             if closeAt > 1.5 { after(closeAt) { print("harness: the Settings panel closed"); setSettings(false) } }
         }
-        if defaults.bool(forKey: "SillScaleOpen") {
-            after(1.5) {
-                let scale = defaults.double(forKey: "SillScale")
-                if scale > 0 { textScale = TextScale.scale(at: scale) }     // 0.25 is Off's place: no scale
-                // Aa sizes a window: over the Desktop, or nothing, its ruler does not open (TextScale.selectable).
-                guard client.textScaleSelectable else {
-                    print("harness: the Aa ruler stays closed: Aa is for a window, and none streams")
-                    return
-                }
-                print("harness: the Aa ruler opened")
-                scaleOpen = true
-            }
-        }
-        // `-SillScaleScript '<s> <scale|off>[; …]'`: Aa's value set s seconds in, as the ruler's release
+        // `-SillScaleScript '<s> <scale|off>[; …]'`: text scale set s seconds in.
         // sets it, whatever streams (a synthetic host streams only the Desktop, over which Aa is dimmed):
         // the viewport it sends (the console's `viewport: …` line), and the host's `win.fitOff` for a
         // scale then Off (issue #179). A test hook: the bars never send a scale while Aa is dimmed.
@@ -1053,40 +919,24 @@ struct StreamScreen: View {
         setSettings(false, restoreKeyboard: false)
         withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
         windowMenu = nil
-        scaleOpen = false
         overlay.setKeyboard(shown: false)
     }
 
-    /// Larger Picture in effect now (PhonePortraitLayout's rule): the switch, while a window streams.
-    /// The Desktop, which Aa never resizes, and nothing streaming keep the standard arrangement.
-    private var largerPictureNow: Bool {
-        PhonePortraitLayout.largerPicture(switchOn: largerPicture, streaming: .init(client.active))
-    }
-
-    /// Opens or closes the Settings panel. Opening puts the drawer, the traffic lights and the Aa
-    /// ruler away and takes the keyboard down: with the overlay not first responder no hardware
-    /// key reaches the Mac, and Esc (or ⌘.) reaches the panel's Done instead. Closing (Done, a tap
-    /// outside, the Settings button, Esc, the VoiceOver escape gesture) puts the keyboard back if
-    /// the panel took it down; the Apps and Keyboard buttons close it with `restoreKeyboard: false`
-    /// because they decide about the keyboard themselves. While it is open the arrangement keeps the
-    /// Larger Picture it opened with (`largerPictureHeld`); a change of the switch, or of what
-    /// streams, applies as it closes.
+    /// Opens or closes the Settings panel. Opening puts the drawer and the traffic lights away and
+    /// takes the keyboard down: with the overlay not first responder no hardware key reaches the Mac,
+    /// and Esc (or ⌘.) reaches the panel's Done instead. Closing puts the keyboard back if the panel
+    /// took it down; the Apps and Keyboard buttons close it with `restoreKeyboard: false`.
     private func setSettings(_ open: Bool, restoreKeyboard: Bool = true) {
         guard open != settingsOpen else { return }
         if open {
             withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
             windowMenu = nil
-            scaleOpen = false
             keyboardBeforeSettings = overlay.isManualKeyboardShown
             overlay.setKeyboard(shown: false)
         }
         let motion: Animation = open && !reduceMotion ? .spring(duration: 0.25, bounce: 0.15) : .easeOut(duration: 0.18)
         withAnimation(motion) {
             settingsOpen = open
-            // Larger Picture keeps the arrangement the panel opened with while it is open, so the
-            // panel never moves under the finger: a change of the switch, or of what streams,
-            // applies as the panel goes.
-            largerPictureHeld = open ? largerPictureNow : nil
         }
         if !open {
             if restoreKeyboard, keyboardBeforeSettings { overlay.setKeyboard(shown: true) }
@@ -1154,7 +1004,7 @@ struct StreamScreen: View {
     private var fullScreenSituation: FullScreenPolicy.Situation {
         FullScreenPolicy.Situation(coversScreen: coversScreen,
                                    streaming: client.active != .none,
-                                   somethingOpen: settingsOpen || drawerOpen || menusOpen || windowMenu != nil || scaleOpen,
+                                   somethingOpen: settingsOpen || drawerOpen || menusOpen || windowMenu != nil,
                                    tour: tour != nil,
                                    pairing: overlayShown,
                                    linkLine: linkReportLine != nil,
@@ -1361,47 +1211,47 @@ struct StreamScreen: View {
         }
     }
 
-    /// The layout for a screen of `size`: the real one, or (`preview`) the swipe in's picture of it.
-    @ViewBuilder
-    private func layouts(_ duo: DuoLayout, size: CGSize, posture: DuoPosture, largerKeyboard: CGFloat?, hidden: Bool,
-                         room: CGRect, preview: Bool = false) -> some View {
-        switch duo {
-        case .innerLandscape:
-            landscape(bar: .regular, width: size.width, fold: posture.info(in: size), screen: size, hidden: hidden,
-                      room: room, preview: preview)
-        case .outerLandscape:
-            landscape(bar: .compact, width: size.width, fold: posture.info(in: size), screen: size, hidden: hidden,
-                      room: room, preview: preview)
-        case .innerPortrait:
-            portrait(metrics: .regular, hidden: hidden, room: room, preview: preview)
-        case .outerPortrait:
-            portrait(metrics: DuoLayout.phoneArrangement ? .phone : .compact, largerKeyboard: largerKeyboard,
-                     hidden: hidden, room: room, preview: preview)
-        }
+    /// The unified stream layout for every orientation: the real view, or (`preview`) the swipe in's picture of it.
+    private func streamLayout(hidden: Bool = false, room: CGRect = .zero, preview: Bool = false) -> some View {
+        StreamLayoutView(client: client,
+                         drawerOpen: $drawerOpen,
+                         keyboardShown: $keyboardShown,
+                         textScale: $textScale,
+                         windowMenu: $windowMenu,
+                         latched: $latched,
+                         overlay: overlay,
+                         settingsOpen: settingsOpen,
+                         setSettings: { setSettings($0, restoreKeyboard: $1) },
+                         menusOpened: menusOpened,
+                         menusClosed: menusClosed,
+                         settingsTransition: { settingsTransition(anchor: $0) },
+                         onPanelSize: { if !preview { panelSize = $0 } },
+                         onTrackpadShown: { if !preview { trackpadShown = $0 } },
+                         pairThisDevice: openPairingOverlay,
+                         linkLine: streamLine,
+                         linkLineLines: streamLineLines,
+                         takeTour: takeTour,
+                         zoom: zoom,
+                         hidden: hidden,
+                         room: room,
+                         preview: preview,
+                         chromeTransition: chromeTransition,
+                         fullScreen: fullScreenRow,
+                         showChrome: { showChrome(by: "an assistive technology") })
     }
 
     /// The swipe in's preview: the interface as it will show, laid out where it will be (the safe area, down to
     /// the bottom edge, as the stream screen is while shown), `progress` of the way in from the left edge, over
-    /// the hidden picture. Each layout's preview draws its controls with the background they sit on and nothing
-    /// of the picture's place (RevealCut): no pane, panel, rim, margin or black there, by construction, and no
-    /// mask or measurement that could arrive a frame late, so the hidden picture is all there is around the
-    /// controls until they land. It takes no touch, says nothing to VoiceOver and reports no tour target.
-    private func revealPreview(_ progress: CGFloat, size: CGSize, posture: DuoPosture, insets now: FullScreenPolicy.Insets) -> some View {
-        // Where the shown layout will be: the safe area now, down to the bottom edge; on an iPad with the status
-        // bar's room it had while shown (hidden now, the status bar comes back as the controls land). An iPhone's
-        // top inset is its sensor housing's, the same either way, and a turn while hidden changes it.
-        let pad = !DuoLayout.phoneArrangement      // an iPad's idiom (DEBUG `-SillIdiom` changes it, as for the layouts)
+    /// the hidden picture.
+    private func revealPreview(_ progress: CGFloat, size: CGSize, insets now: FullScreenPolicy.Insets) -> some View {
+        let pad = !DuoLayout.phoneArrangement
         let insets = FullScreenPolicy.Insets(top: pad ? (shownInsets?.top ?? now.top) : now.top, left: now.left,
                                              bottom: now.bottom, right: now.right)
         let shown = CGRect(x: insets.left, y: insets.top, width: max(0, size.width - insets.left - insets.right),
                            height: max(0, size.height - insets.top))
-        let duo = DuoLayout.of(shown.size)
-        let keyboard = DuoLayout.drawsPhone(shown.size)
-            ? PhonePortraitLayout.keyboard(for: shown.size, largerPicture: largerPictureNow, foldable: posture.hinge != .unknown) : nil
-        return layouts(duo, size: shown.size, posture: posture, largerKeyboard: keyboard, hidden: false, room: .zero, preview: true)
+        return streamLayout(hidden: false, room: .zero, preview: true)
             .frame(width: shown.width, height: shown.height)
             .transformPreference(TourTargetsKey.self) { $0 = [:] }
-            .transformPreference(KeyboardToggleFrameKey.self) { $0 = nil }
             .offset(x: shown.minX - (1 - progress) * size.width, y: shown.minY)
             .frame(width: size.width, height: size.height, alignment: .topLeading)
             .allowsHitTesting(false)
@@ -1441,7 +1291,6 @@ struct StreamScreen: View {
         if drawerOpen { return "the Apps list was open" }
         if settingsOpen { return "Settings was open" }
         if windowMenu != nil { return "a window's lights were open" }
-        if scaleOpen { return "the Aa ruler was open" }
         // The person's own keyboard: a hardware keyboard's hold is not theirs, so a person with a
         // keyboard attached still gets the tour (HardwareKeyboardPolicy).
         if keyboardShown { return "the keyboard was up" }
@@ -1454,40 +1303,27 @@ struct StreamScreen: View {
         return nil
     }
 
-    /// `keysOnItsSide`: the iPhone Duo open, whose keys and trackpad come with the device on its side.
-    /// `thumbnails`: false for a phone with Larger Picture. `features`: `tourFeatures`.
-    private func tourCopy(_ run: TourRun, _ layout: TourLayout, keysOnItsSide: Bool = false, thumbnails: Bool = true,
+    private func tourCopy(_ run: TourRun, _ layout: TourLayout, keysOnItsSide: Bool = false,
                           features: TourFeatures) -> TourCopy {
         TourPolicy.copy(run.at, layout, mac: client.macName, device: StreamClient.deviceWord,
                         voiceOver: tourVoiceOver, firstOfRun: run.firstOfRun, keysOnItsSide: keysOnItsSide,
-                        thumbnails: thumbnails, features: features)
+                        features: features)
     }
 
-    /// What the tour's words depend on now (TourFeatures): the Menus button on screen (its target
-    /// reported), this device's Three-Finger Gestures with a Mac that takes them, the Mac's Virtual
-    /// Display setting as the Settings panel shows it, the clipboard the Mac's window list shares, this
-    /// device's Paste on ‹Mac› Right Away, a Mac with sound (Send Audio, on or off), and
-    /// `offersLarger`, the Settings panel's Larger Picture switch offered here (`body`). The window
-    /// list comes before the picture and kind 16 right after it, so a card sees them; a late change
-    /// redraws its rows.
-    private func tourFeatures(offersLarger: Bool) -> TourFeatures {
+    private func tourFeatures() -> TourFeatures {
         TourFeatures(menus: tourTargets[.menus] != nil,
                      gestures: StreamClient.gesturesOn && (client.hostGestures ?? 0) >= TrackpadGesture.generation,
                      virtualDisplay: client.settings.displayed?.virtualDisplay == true,
                      clipboard: ClipboardPolicy.hostTakes(client.hostClipboard),
                      pasteRightAway: StreamClient.pasteRightAwayOn,
-                     sound: client.macHasSound,
-                     largerPicture: offersLarger)
+                     sound: client.macHasSound)
     }
 
     #if DEBUG
-    /// "tour: card bar (Windows and Menus): 5 rows, 2 New; Menus button, gestures, no Virtual Display,
-    /// clipboard, paste right away, sound, no Larger Picture".
     static func tourRowsLine(_ run: TourRun, _ copy: TourCopy, _ f: TourFeatures) -> String {
         func has(_ on: Bool, _ name: String) -> String { on ? name : "no " + name }
         let what = [has(f.menus, "Menus button"), has(f.gestures, "gestures"), has(f.virtualDisplay, "Virtual Display"),
-                    has(f.clipboard, "clipboard"), has(f.pasteRightAway, "paste right away"), has(f.sound, "sound"),
-                    has(f.largerPicture, "Larger Picture")]
+                    has(f.clipboard, "clipboard"), has(f.pasteRightAway, "paste right away"), has(f.sound, "sound")]
         return "tour: card \(run.at.rawValue) (\(copy.title)): \(copy.rows.count) rows, \(copy.rows.filter(\.isNew).count) New; "
             + what.joined(separator: ", ")
     }
@@ -1724,162 +1560,9 @@ struct StreamScreen: View {
         #endif
     }
 
-    /// Grows from the Settings button's corner, the way a popover would; a plain fade under Reduce
-    /// Motion. `anchor` is the panel's top-trailing corner as a point of the view the transition is
-    /// attached to. In landscape that view is the content area, whose corner is within a few
-    /// points of the panel's; in portrait it is the whole screen, where `.topTrailing` would make
-    /// the panel slide down over the window bar (PortraitStreamScreen passes its own).
+    /// Grows from the Settings button's corner, the way a popover would; a plain fade under Reduce Motion.
     private func settingsTransition(anchor: UnitPoint = .topTrailing) -> AnyTransition {
         reduceMotion ? .opacity : .scale(scale: 0.94, anchor: anchor).combined(with: .opacity)
-    }
-
-    /// `hidden`: full screen (docs/full-screen-plan.md): no bar, and the stream panel at `room` with no
-    /// margin, corner or rim, its letterbox black; the panel is the same view either way (its input view stays
-    /// first responder, a composition and a coast go on), so its frame animates. `screen`: this layout's size.
-    /// `preview`: the swipe in's picture of the shown layout: the bar alone, which carries its own background;
-    /// nothing under it, the picture's place (RevealCut.landscape), is drawn.
-    private func landscape(bar plain: BarMetrics, width: CGFloat, fold: FoldInfo, screen: CGSize, hidden: Bool = false,
-                           room: CGRect = .zero, preview: Bool = false) -> some View {
-        // The book pose (docs/iphone-duo-plan.md, (a)): nothing on the fold's band; elsewhere as before.
-        let (bar, stripWidth) = plain.clearing(fold, width: width)
-        return VStack(spacing: 0) {
-            if !hidden {
-                TopBar(client: client, metrics: bar, stripWidth: stripWidth, drawerOpen: $drawerOpen,
-                       keyboardShown: $keyboardShown,
-                       textScale: $textScale, scaleOpen: $scaleOpen, windowMenu: $windowMenu,
-                       settingsOpen: settingsOpen,
-                       // Apps, Menus, Aa, Keyboard, Desktop, Settings, and the strip. The Mac's sound has no
-                       // button: Send Audio and Mute are the Settings panel's switches (Noah, 2026-10-27).
-                       menusFit: MacMenuButton.fits(width: width - 2 * bar.padding, buttons: 6, buttonWidth: bar.buttonWidth,
-                                                    gap: bar.gap, thumbWidth: bar.thumbWidth),
-                       toggleKeyboard: { overlay.toggleKeyboard() },
-                       setSettings: { setSettings($0, restoreKeyboard: $1) },
-                       menusOpened: menusOpened, menusClosed: menusClosed)
-                    .transition(chromeTransition)
-            }
-            contentArea(bar: bar, screen: screen, hidden: hidden, room: room, preview: preview)
-        }
-    }
-
-    /// `largerKeyboard`: Larger Picture's keyboard on a phone (see `body`), nil otherwise. `hidden`, `room`,
-    /// `preview`: full screen's, as `landscape`'s.
-    private func portrait(metrics: PortraitMetrics, largerKeyboard: CGFloat? = nil, hidden: Bool = false,
-                          room: CGRect = .zero, preview: Bool = false) -> some View {
-        PortraitStreamScreen(client: client, metrics: metrics, drawerOpen: $drawerOpen,
-                             keyboardShown: $keyboardShown,
-                             textScale: $textScale, scaleOpen: $scaleOpen, windowMenu: $windowMenu,
-                             latched: $latched, overlay: overlay,
-                             settingsOpen: settingsOpen,
-                             setSettings: { setSettings($0, restoreKeyboard: $1) },
-                             menusOpened: menusOpened, menusClosed: menusClosed,
-                             settingsTransition: { settingsTransition(anchor: $0) },
-                             onPanelSize: { if !preview { panelSize = $0 } },
-                             pairThisDevice: openPairingOverlay,
-                             linkLine: streamLine,
-                             linkLineLines: streamLineLines,
-                             takeTour: takeTour,
-                             largerKeyboard: largerKeyboard,
-                             zoom: zoom,
-                             hidden: hidden, room: room, preview: preview,
-                             chromeTransition: chromeTransition,
-                             fullScreen: fullScreenRow,
-                             showChrome: { showChrome(by: "an assistive technology") })
-    }
-
-    /// The stream panel's shape: rounded inside its margin, square while full screen.
-    private func streamShape(_ hidden: Bool) -> RoundedRectangle { RoundedRectangle(cornerRadius: hidden ? 0 : 12, style: .continuous) }
-
-    /// Under the bar: the stream panel, the drawer and the Settings panel. In the swipe in's preview, nothing at
-    /// all: it is the picture's place (RevealCut.landscape), so no pane, rim, margin or black can come in with
-    /// the bar, by construction (Noah, 2026-11-12: "no bezel gets rendered above or below the controls until
-    /// they are fully summoned").
-    @ViewBuilder
-    private func contentArea(bar: BarMetrics, screen: CGSize, hidden: Bool, room: CGRect, preview: Bool) -> some View {
-        if preview {
-            Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            liveContentArea(bar: bar, screen: screen, hidden: hidden, room: room)
-        }
-    }
-
-    private func liveContentArea(bar: BarMetrics, screen: CGSize, hidden: Bool, room: CGRect) -> some View {
-        ZStack(alignment: .topLeading) {
-            Color.black
-
-            ZStack {
-                // Scaled and moved by the picture's zoom, inside the clip below.
-                ZoomedStreamView(client: client, zoom: zoom)
-                // Same frame as the video, so a touch maps straight onto the streamed frame (through the
-                // zoom, StreamZoom.unzoomedPoint).
-                InputOverlay(videoSize: client.videoSize,
-                             send: { client.sendInput($0) },
-                             setOwnPointer: { client.setOwnPointer($0, from: $1) },
-                             proxy: overlay,
-                             isKeyboardShown: $keyboardShown,
-                             latchedModifiers: latched,
-                             onModifiersConsumed: { latched = [] },
-                             sendGesture: { client.sendGesture($0, fingers: $1) },
-                             macRepeatsKeys: { KeyTyping.macRepeats(keyRepeat: client.hostKeyRepeat) },
-                             readZoom: { [zoom] in zoom.zoom },
-                             writeZoom: { [zoom] in zoom.set($0) })
-            }
-            // Full screen's letterbox is black, as a film's; the panel's own grey otherwise.
-            .background(hidden ? Color.black : Palette.panel)
-            // A locked Mac: its cover over the picture (LockedMac), under the link's line.
-            .overlay { LockedMacShade(client: client) }
-            .overlay(alignment: .top) { LinkLineView(text: streamLine, lines: streamLineLines) }
-            // Full screen: the picture as one element for VoiceOver, Switch Control and Voice Control.
-            .overlay { HiddenPictureElement(hidden: hidden, mac: client.macName.isEmpty ? "The Mac" : client.macName,
-                                            show: { showChrome(by: "an assistive technology") }) }
-            .clipShape(streamShape(hidden))
-            .overlay(streamShape(hidden).strokeBorder(Color.white.opacity(hidden ? 0 : 0.09), lineWidth: 1))
-            // The panel itself, inside the padding: the size the host fits the Mac window to.
-            .onGeometryChange(for: CGSize.self, of: { $0.size }, action: { panelSize = $0 })
-            .tourTarget(.stream)
-            // 8 pt all round; full screen, the room (the panel's frame is the room, in this area's space).
-            .padding(hidden ? EdgeInsets(top: room.minY, leading: room.minX, bottom: max(0, screen.height - room.maxY),
-                                         trailing: max(0, screen.width - room.maxX))
-                            : EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
-
-            // The dim comes after the overlay on purpose: with the drawer open a tap on the dim
-            // closes the drawer instead of clicking the Mac.
-            if drawerOpen {
-                Color.black.opacity(0.58)
-                    .contentShape(Rectangle())
-                    .onTapGesture { withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false } }
-                    .accessibilityHidden(true)
-                    .transition(.opacity)
-
-                AppDrawer(client: client, drawerOpen: $drawerOpen)
-                    .frame(width: 380)
-                    .frame(maxHeight: .infinity)
-                    .padding(.leading, 22)
-                    .padding(.top, 8)
-                    .padding(.bottom, 14)
-                    .transition(.opacity)
-            }
-
-            // The drawer's mirror on the trailing edge, its right side lined up with the Settings
-            // button's. No dim: the stream stays as it is, so a change can be watched taking effect.
-            // A tap on it closes the panel and never clicks the Mac; the bar above stays live.
-            if settingsOpen {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { setSettings(false) }
-                    .accessibilityHidden(true)
-
-                HostSettingsPanel(client: client, close: { setSettings(false) }, pairThisDevice: openPairingOverlay,
-                                  takeTour: takeTour, fullScreen: fullScreenRow)
-                    .frame(width: bar.settingsWidth)
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .padding(.top, 8)
-                    .padding(.bottom, 14)
-                    .padding(.trailing, bar.padding)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .transition(settingsTransition())
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -1980,172 +1663,9 @@ struct LockedMacShade: View {
     }
 }
 
-// MARK: - Top bar
+// MARK: - Bar button
 
-/// The landscape top bar's numbers. The inner display gets the Main board's roomy bar; the outer
-/// display gets the Laptop board's compact one, which is 8 pt shorter and tighter all round — on a
-/// 500 pt tall screen the bar is a sixth of everything there is, so every point it gives back is a
-/// point of Mac. Every bar carries the Aa control (Noah, 2026-09-22: both orientations); it takes
-/// one button's width and unfolds over its neighbours only while touched.
-struct BarMetrics {
-    let height: CGFloat
-    let padding: CGFloat
-    let gap: CGFloat
-    let buttonWidth: CGFloat
-    let buttonHeight: CGFloat
-    let buttonSpacing: CGFloat      // between a button's icon and its label
-    let thumbWidth: CGFloat
-    let thumbHeight: CGFloat
-    let thumbRadius: CGFloat
-    let thumbSpacing: CGFloat
-    let thumbPad: CGFloat
-    let thumbFade: Double
-    let showsTextSize: Bool
-    /// The Settings panel hanging under this bar.
-    let settingsWidth: CGFloat
-
-    static let regular = BarMetrics(height: 86, padding: 22, gap: 12,
-                                    buttonWidth: 66, buttonHeight: 66, buttonSpacing: 4,
-                                    thumbWidth: 104, thumbHeight: 66, thumbRadius: 10,
-                                    thumbSpacing: 16, thumbPad: 10, thumbFade: 0.86,
-                                    showsTextSize: true, settingsWidth: 360)
-
-    static let compact = BarMetrics(height: 78, padding: 14, gap: 12,
-                                    buttonWidth: 64, buttonHeight: 58, buttonSpacing: 3,
-                                    thumbWidth: 92, thumbHeight: 58, thumbRadius: 9,
-                                    thumbSpacing: 14, thumbPad: 10, thumbFade: 0.88,
-                                    showsTextSize: true, settingsWidth: 340)
-}
-
-private struct TopBar: View {
-    @ObservedObject var client: StreamClient
-    let metrics: BarMetrics
-    /// The book pose: the strip's width, so that it ends short of the fold (BarMetrics.clearing);
-    /// nil: it takes the room there is, as before.
-    var stripWidth: CGFloat? = nil
-    @Binding var drawerOpen: Bool
-    @Binding var keyboardShown: Bool
-    @Binding var textScale: Double?
-    @Binding var scaleOpen: Bool
-    @Binding var windowMenu: UInt32?
-    let settingsOpen: Bool
-    /// Whether the bar holds the Menus button and still a whole thumbnail (`MacMenuButton.fits`).
-    let menusFit: Bool
-    let toggleKeyboard: () -> Void
-    /// Opens or closes the Settings panel; the second argument says whether closing puts the
-    /// keyboard back (see `StreamScreen.setSettings`).
-    let setSettings: (_ open: Bool, _ restoreKeyboard: Bool) -> Void
-    /// The Menus pull-down opened and went (see `StreamScreen.menusOpened`).
-    let menusOpened: () -> Void
-    let menusClosed: () -> Void
-
-    var body: some View {
-        HStack(spacing: metrics.gap) {
-            button(open: drawerOpen, symbol: "magnifyingglass", label: "Apps",
-                   accessibilityLabel: drawerOpen ? "Close the app list" : "Open the app list",
-                   action: {
-                       setSettings(false, false)
-                       withAnimation(.easeOut(duration: 0.18)) { drawerOpen.toggle() }
-                   })
-
-            WindowStrip(client: client, width: metrics.thumbWidth, height: metrics.thumbHeight,
-                        radius: metrics.thumbRadius, spacing: metrics.thumbSpacing,
-                        pad: metrics.thumbPad, fade: metrics.thumbFade, menuFor: $windowMenu)
-                .opacity(scaleOpen ? 0.2 : 1)      // the ruler is centred on Aa and reaches over the strip's end
-                .allowsHitTesting(!scaleOpen)
-                .frame(width: stripWidth)
-                .tourTarget(.strip, inset: WindowStrip.tourBand(pad: metrics.thumbPad))
-            // The book pose: the fold's band, and nothing on it, between the strip and the buttons.
-            if stripWidth != nil { Spacer(minLength: 0) }
-
-            // The Mac's menus of the streamed app, next to the thumbnails because they are the picked
-            // window's app's. Only while the Mac sent some, and where the bar holds it: with none the
-            // strip takes its room back.
-            if client.menus.hasMenus, menusFit {
-                MacMenuButton(client: client, width: metrics.buttonWidth, height: metrics.buttonHeight,
-                              spacing: metrics.buttonSpacing, onOpen: menusOpened, onClose: menusClosed)
-                    .opacity(scaleOpen ? 0 : 1)    // under the Aa ruler, as the buttons after Aa
-                    .allowsHitTesting(!scaleOpen)
-                    .transition(.opacity)
-            }
-
-            // Text size: the host sizes the Mac window to the panel divided by this scale, so a
-            // bigger number means a smaller Mac window and bigger text here. The slider unfolds to
-            // the right, over the two buttons after it, which fade while it is open.
-            TextScaleControl(scale: $textScale, open: $scaleOpen,
-                             width: metrics.buttonWidth, height: metrics.buttonHeight,
-                             pointsPerStep: metrics.buttonHeight >= 60 ? 44 : 40,
-                             offered: client.textScaleOffersOff, available: client.textScaleSelectable,
-                             unavailableHint: client.textScaleUnavailableHint)
-                .tourTarget(.textSize)
-
-            button(open: keyboardShown, symbol: "keyboard", label: "Keyboard",
-                   accessibilityLabel: keyboardShown ? "Hide the keyboard" : "Show the keyboard",
-                   action: { setSettings(false, false); toggleKeyboard() })
-                .opacity(scaleOpen ? 0 : 1)
-                .allowsHitTesting(!scaleOpen)
-                .tourTarget(.keyboard)
-
-            // The Desktop on the Mac's stop it shows, and with two stops or more the next at a tap
-            // (DesktopDisplays): "Desktop 2", a dot per stop while the Desktop streams.
-            let desktop = client.desktopButton
-            button(open: client.active == .desktop, symbol: "desktopcomputer", label: desktop.label,
-                   accessibilityLabel: desktop.accessibilityLabel,
-                   action: { client.tapDesktop() })
-                .desktopStops(desktop, inset: metrics.buttonHeight >= 60 ? 5 : 3.5)
-                .opacity(scaleOpen ? 0 : 1)
-                .allowsHitTesting(!scaleOpen)
-
-            // Leave's old slot: Disconnect is the Settings panel's pinned last row now.
-            button(open: settingsOpen, symbol: "gearshape", label: "Settings",
-                   accessibilityLabel: settingsOpen ? "Close settings" : "Settings for \(client.macName.isEmpty ? "the Mac" : client.macName)",
-                   action: { setSettings(!settingsOpen, true) })
-                .opacity(scaleOpen ? 0 : 1)
-                .allowsHitTesting(!scaleOpen)
-                .tourTarget(.settings)
-        }
-        .animation(.easeOut(duration: 0.16), value: scaleOpen)
-        .animation(.easeOut(duration: 0.18), value: client.menus.hasMenus)
-        .frame(height: metrics.height)
-        .padding(.horizontal, metrics.padding)
-        // The bar's colour runs to the screen edge; its contents stay inside the safe area.
-        .background(Palette.bar.ignoresSafeArea(edges: .top))
-    }
-
-    private func button(open: Bool, symbol: String, label: String, accessibilityLabel: String,
-                        action: @escaping () -> Void) -> some View {
-        BarButton(open: open, width: metrics.buttonWidth, height: metrics.buttonHeight,
-                  accessibilityLabel: accessibilityLabel, action: action) {
-            VStack(spacing: metrics.buttonSpacing) {
-                Image(systemName: symbol)
-                    .font(.system(size: 22))
-                    .foregroundStyle(open ? Palette.accent : Palette.text)
-                Text(label)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(open ? Palette.accent : Palette.barLabel)
-            }
-        }
-    }
-}
-
-// MARK: - Spotlight
-
-/// Spotlight on the Mac: exactly ⌘Space, down then up. Whatever modifiers are latched never join
-/// it — the button means Spotlight, not "space with whatever happens to be held".
-enum Spotlight {
-    /// The sparkle magnifier where the system has it. The Apps button already uses the plain
-    /// magnifier, so the fallback must still look different from it.
-    static let symbol: String = UIImage(systemName: "sparkle.magnifyingglass") != nil
-        ? "sparkle.magnifyingglass" : "magnifyingglass.circle"
-
-    static func press(send: (InputEvent) -> Void) {
-        KeyChord.spotlight.forEach(send)
-    }
-}
-
-/// A bar button: 66×66 in the roomy top bar, 64×58 in the compact one and the portrait window bar,
-/// 56×50 with a 14 pt radius in the outer display's portrait bar, and 50 pt tall with its share of
-/// the row's width in a phone's row 1.
+/// A bar or rail button.
 struct BarButton<Content: View>: View {
     let open: Bool
     let width: CGFloat
@@ -2155,7 +1675,7 @@ struct BarButton<Content: View>: View {
     let action: () -> Void
     let content: () -> Content
 
-    init(open: Bool, width: CGFloat = 66, height: CGFloat = 66, radius: CGFloat = 16,
+    init(open: Bool, width: CGFloat = 56, height: CGFloat = 50, radius: CGFloat = 13,
          accessibilityLabel: String,
          action: @escaping () -> Void, @ViewBuilder content: @escaping () -> Content) {
         self.open = open
@@ -2177,241 +1697,6 @@ struct BarButton<Content: View>: View {
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
     }
-}
-
-extension View {
-    /// The Desktop button beyond its label and symbol (DesktopDisplays.button), on a Mac with two stops or
-    /// more: VoiceOver's value ("Display 2 of 3, DELL U2723QE") and hint ("Shows the next display." while
-    /// a tap steps), and the stops' dots, the shown one filled ("3/7" from seven), over the button's bottom
-    /// margin `inset` from its edge while the Desktop streams, so no bar's layout moves for them. Nothing
-    /// with one stop or a Mac from before this, as before.
-    func desktopStops(_ face: DesktopDisplays.Button, inset: CGFloat, dot: CGFloat = 4) -> some View {
-        accessibilityValue(face.accessibilityValue ?? "")
-            .accessibilityHint(face.accessibilityHint ?? "")
-            .overlay(alignment: .bottom) { DesktopStopDots(face: face, dot: dot).padding(.bottom, inset) }
-    }
-}
-
-/// The Desktop button's place among the Mac's stops while the Desktop streams (DesktopDisplays): one dot per
-/// stop, the shown one filled, as a page control shows a page; "3/7" in place of seven dots or more. The
-/// button reads it whole; VoiceOver hears its value instead.
-struct DesktopStopDots: View {
-    let face: DesktopDisplays.Button
-    var dot: CGFloat = 4
-
-    var body: some View {
-        Group {
-            if let counter = face.counter {
-                // As tall as the dots it stands for, so its digits sit where they would and never reach the
-                // label above (an 8 pt line of its own overlapped "Desktop 3" in a 58 pt window bar).
-                Text(counter)
-                    .font(.system(size: dot + 3, weight: .bold).monospacedDigit())
-                    .foregroundStyle(Palette.accent)
-                    .frame(height: dot)
-            } else if face.dots > 0 {
-                HStack(spacing: dot * 0.75) {
-                    ForEach(1...face.dots, id: \.self) { i in
-                        Circle()
-                            .fill(Palette.accent.opacity(i == face.lit ? 1 : 0.32))
-                            .frame(width: dot, height: dot)
-                    }
-                }
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-}
-
-// MARK: - Text size control
-
-/// The Aa control: a bar button that opens into a ruler while the finger is down, the way the
-/// camera's zoom button opens into its dial and the Dynamic Island timer scrubs. The thumb stays
-/// put at the button's centre and the ruler slides under it: six detents, Off and then 0.5× to 1.5×
-/// in 0.25 steps, a tick of haptic at each. The bar fades the buttons next to it while `open` and
-/// brings them back on release, when the chosen value is applied once (every change restarts the
-/// stream, so nothing is sent mid-drag). A nil scale means the Mac window is not fitted: the leftmost
-/// detent, Off, one step below 0.5× (`TextScale`; issue #179). Off is not offered while the virtual
-/// display is on, where a nil scale is 1× (`offered`). Only a window is sized by it: while anything
-/// else streams it is dimmed, its ruler never opens and VoiceOver hears why (`available`,
-/// `TextScale.selectable`; Noah, 2026-10-29).
-struct TextScaleControl: View {
-    @Binding var scale: Double?
-    @Binding var open: Bool
-    var width: CGFloat = 66
-    var height: CGFloat = 66
-    var radius: CGFloat = 16
-    /// Finger travel (and ruler spacing) per detent; smaller in the tighter bars so the ruler,
-    /// centred on the button, stays inside the screen.
-    var pointsPerStep: CGFloat = 44
-    /// A fixed height for "Aa", and the space under it, so its value lines up with the labels of
-    /// bar buttons whose symbols sit in a box of that height (a phone's row 1); nil: as tall as the
-    /// text, 2 pt over the value (every bar that has always had it).
-    var iconBox: CGFloat? = nil
-    var iconSpacing: CGFloat = 2
-    /// Whether the ruler has an Off detent (`TextScale.detents`, `TextScale.offersOff`).
-    var offered = true
-    /// Whether Aa can be used now (`TextScale.selectable`: only while a window streams). Otherwise
-    /// dimmed, no ruler, a VoiceOver swipe changes nothing, and VoiceOver hears
-    /// `TextScale.unavailableHint`; its value stays, for the next window.
-    var available = true
-    /// What VoiceOver hears while Aa cannot be used (the off-console view's own, else `TextScale.unavailableHint`).
-    var unavailableHint = TextScale.unavailableHint
-
-    var steps: [Double] { TextScale.detents(offered: offered) }
-    /// Padding either side of the visible ruler; two detents show each side of the thumb.
-    static let sliderInset: CGFloat = 30
-    /// The ruler's frame shows two detents either side of the thumb, whatever the detents: Off's
-    /// sixth slides in as the finger nears it. So every bar's ruler keeps the width it had with five,
-    /// and a phone's row 1 the room it was laid out for (PhonePortraitLayout's `rulerSpans`).
-    static let detentsEachSide = 2
-    var sliderWidth: CGFloat { pointsPerStep * CGFloat(2 * Self.detentsEachSide) + Self.sliderInset * 2 }
-    /// How much of itself a dimmed Aa shows.
-    static let unavailableOpacity = 0.35
-
-    @State private var live: Double = 1.0
-    @State private var startValue: Double = 1.0
-    /// Where the ruler has the scale now.
-    private var position: Double { TextScale.position(of: scale, offered: offered) }
-    @State private var startX: CGFloat = 0
-
-    var body: some View {
-        VStack(spacing: iconBox == nil ? 2 : iconSpacing) {
-            if let iconBox {
-                Text("Aa")
-                    .font(.system(size: height >= 60 ? 19 : 17, weight: .semibold))
-                    .foregroundStyle(Palette.text)
-                    .frame(height: iconBox)
-            } else {
-                Text("Aa")
-                    .font(.system(size: height >= 60 ? 19 : 17, weight: .semibold))
-                    .foregroundStyle(Palette.text)
-            }
-            Text(TextScale.title(at: position))
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Palette.barLabel)
-        }
-        .opacity(available ? 1 : Self.unavailableOpacity)     // dimmed: Aa sizes a window, and none streams
-        .frame(width: width, height: height)
-        .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Palette.control))
-        .opacity(open ? 0 : 1)
-        .overlay {
-            // Centred on the button: the thumb is where the finger came down.
-            slider
-                .opacity(open ? 1 : 0)
-                .scaleEffect(open ? 1 : 0.6)
-                .allowsHitTesting(false)
-        }
-        .zIndex(open ? 1 : 0)
-        // A ruler asked open while Aa cannot be used (the harness's `-SillScaleOpen` over the Desktop)
-        // folds at once; one open when the window stops streaming (closed on the Mac, the Desktop
-        // picked from another device) folds without applying (`onChange(of: available)`, and `onEnded`
-        // applies nothing while Aa cannot be used).
-        .onChange(of: open, initial: true) { _, isOpen in
-            guard isOpen else { return }
-            if available { live = position } else { open = false }
-        }
-        .onChange(of: available) { _, now in if !now, open { withAnimation(.easeOut(duration: 0.2)) { open = false } } }
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                .onChanged { g in
-                    if !open {
-                        startValue = position
-                        live = startValue
-                        startX = g.location.x
-                        withAnimation(.spring(duration: 0.22, bounce: 0.15)) { open = true }
-                    }
-                    // The ruler follows the finger: dragging right raises the value, and the ticks
-                    // slide left under the fixed thumb.
-                    let dx = g.location.x - startX
-                    let snapped = TextScale.snap(startValue + Double(dx / pointsPerStep) * 0.25, offered: offered)
-                    if snapped != live {
-                        UISelectionFeedbackGenerator().selectionChanged()
-                        withAnimation(.easeOut(duration: 0.1)) { live = snapped }
-                    }
-                }
-                .onEnded { _ in
-                    // A plain tap on an untouched control changes nothing, and nor does a drag the
-                    // stream left a window during.
-                    if available, position != live { scale = TextScale.scale(at: live) }
-                    withAnimation(.easeOut(duration: 0.2)) { open = false }
-                },
-            including: available ? .all : .none      // dimmed: a touch opens nothing
-        )
-        .onDisappear { open = false }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Text size")
-        .accessibilityValue(TextScale.spoken(at: position))
-        .accessibilityHint(available ? "" : unavailableHint)
-        // Always adjustable, so Aa stays one view and one accessibility element when a window starts or
-        // stops streaming: VoiceOver keeps its place on it, and the ruler's fold above runs. Dimmed, it
-        // is what a disabled slider is ("dimmed, adjustable"): a swipe changes nothing. (Adding the
-        // action only while Aa can be used made a new view and element at every change: the review of
-        // #181.)
-        .accessibilityAdjustableAction { direction in
-            guard available else { return }
-            switch direction {
-            case .increment: scale = TextScale.scale(at: TextScale.step(from: position, up: true, offered: offered))
-            case .decrement: scale = TextScale.scale(at: TextScale.step(from: position, up: false, offered: offered))
-            @unknown default: break
-            }
-        }
-        .disabled(!available)     // VoiceOver: "dimmed"
-    }
-
-    /// The ruler: a track with a tick and a label at each detent that slides so the live value sits
-    /// under the fixed thumb; the ends fade out where they run past the frame (two detents each side).
-    private var slider: some View {
-        let w = sliderWidth
-        let step = pointsPerStep
-        let midX = w / 2
-        let midY = height / 2 + 4
-        func x(_ value: Double) -> CGFloat { midX + CGFloat((value - live) / 0.25) * step }
-        let steps = self.steps
-        return ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Palette.controlOpen)
-            ZStack(alignment: .topLeading) {
-                Capsule().fill(Palette.barLabel.opacity(0.35))
-                    .frame(width: step * CGFloat(steps.count - 1), height: 3)
-                    .offset(x: x(steps[0]), y: midY - 1.5)
-                ForEach(steps, id: \.self) { value in
-                    Rectangle().fill(Palette.barLabel.opacity(0.6))
-                        .frame(width: 2, height: 9)
-                        .offset(x: x(value) - 1, y: midY - 4.5)
-                    Text(value == TextScale.off ? "Off" : TextScale.number(value))
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(value == live ? Palette.text : Palette.barLabel)
-                        .frame(width: step, alignment: .center)
-                        .offset(x: x(value) - step / 2, y: midY + 9)
-                }
-            }
-            .frame(width: w, height: height, alignment: .topLeading)   // the mask below is sized to this
-            .mask(
-                LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.12),
-                                       .init(color: .black, location: 0.88), .init(color: .clear, location: 1)],
-                               startPoint: .leading, endPoint: .trailing)
-            )
-            Circle().fill(Palette.accent)
-                .frame(width: 22, height: 22)
-                .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
-                .offset(x: midX - 11, y: midY - 11)
-            // The live value over the thumb, where the finger does not cover it. In a 50 pt ruler
-            // (a phone's row 1, the compact window bar) `midY - 34` put the top of its digits 2 pt
-            // outside the clip; it sits where the 58 pt bars put it (1 pt above the frame's top,
-            // the digits 2 pt inside), and in the taller bars as it always has.
-            Text(TextScale.title(at: live))
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Palette.text)
-                .frame(width: 60, alignment: .center)
-                .offset(x: midX - 30, y: max(midY - 34, -1))
-        }
-        .frame(width: w, height: height, alignment: .topLeading)
-        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-    }
-
-    /// 0.5, 0.75, 1, 1.25, 1.5: trailing zeros dropped, and "1" rather than "1.0".
-    static func label(_ scale: Double) -> String { TextScale.number(scale) }
 }
 
 // MARK: - Window thumbnails
@@ -2846,6 +2131,30 @@ struct AppDrawer: View {
                 searchField
                 ScrollView {
                     VStack(spacing: 6) {
+                        let desktop = client.desktopButton
+                        if matches(desktop.label) {
+                            let stopTrailing: String? = desktop.counter ?? (desktop.dots > 0 ? "\(desktop.lit)/\(desktop.dots)" : nil)
+                            DrawerRow(height: 50,
+                                      highlighted: client.active == .desktop,
+                                      title: desktop.label,
+                                      trailing: stopTrailing,
+                                      action: {
+                                          client.tapDesktop()
+                                          withAnimation(.easeOut(duration: 0.18)) { drawerOpen = false }
+                                      }) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .fill(client.active == .desktop ? Palette.controlOpen : Palette.iconFallback)
+                                    Image(systemName: "desktopcomputer")
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundStyle(client.active == .desktop ? Palette.accent : Palette.text)
+                                }
+                                .frame(width: 32, height: 32)
+                            }
+                            .accessibilityLabel(desktop.accessibilityLabel)
+                            .accessibilityValue(desktop.accessibilityValue ?? "")
+                            .accessibilityHint(desktop.accessibilityHint ?? "")
+                        }
                         if !openApps.isEmpty {
                             header("Open now")
                             ForEach(openApps) { app in
@@ -3057,19 +2366,5 @@ struct DrawerRow<Leading: View>: View {
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Larger Picture's view of what streams
-
-extension PhonePortraitLayout.Streaming {
-    /// What the Mac's window list says streams (`StreamClient.active`), as Larger Picture's rule
-    /// (`PhonePortraitLayout.largerPicture(switchOn:streaming:)`) reads it.
-    init(_ source: StreamSource) {
-        switch source {
-        case .none: self = .nothing
-        case .desktop: self = .desktop
-        case .window: self = .window
-        }
     }
 }

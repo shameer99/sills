@@ -764,41 +764,33 @@ Below, "this file" means CLAUDE.md, and "Build and run below" means docs/BUILD-A
   result carried while the same browser lists it, forgotten once it leaves and when a browser is made
   again (`rowRecords`, `RowRecordKey`: the cable pulled, 2026-10-27); pure, checked with swiftc),
   `StreamScreen`
-  (landscape: top bar, thumbnails, drawer, Aa, Keyboard, Desktop; layout
-  selection by size incl. Duo outer display, and `DuoLayout.phoneArrangement`,
-  the idiom: which arrangement `.outerPortrait` draws; `DuoLayout.isPortrait`,
-  the laptop layouts, where the trackpad's pointer shows), `PortraitStreamScreen`
-  (portrait in two arrangements: the halves, the picture over the window bar,
-  the key row and the trackpad, at the inner display's size and, for an iPad
-  window narrower than 600 pt, the compact one with the key row in two lines;
-  and a phone held upright, from `PhonePortraitLayout`; the key row's two sets,
-  twelve and six), `PhonePortraitLayout` (a phone upright, `.outerPortrait` on
-  an iPhone, as rects from the stream screen's size: the picture's fixed 16:10
-  pane, row 1's five buttons in their band, the strip, six caps, the trackpad
-  and its vertical span, the Aa ruler, the drawer and the Settings panel across
-  row 1, and the dim, and the Menus button ending the strip's row (`menus`,
-  `stripBesideMenus`; no Sound button anywhere since 2026-10-27); with Larger
-  Picture's keyboard (`keyboard`, from
-  `keyboardHeight(for:)`, only while a window streams: `largerPicture(switchOn:
-  streaming:)` and `Streaming`, and only where it is larger: `largerPictureGains`,
-  `offersLargerPicture(screen:)`) no strip, the room over the keyboard, Menus in
-  row 1 (`buttonsBesideMenus`), the drawer above row 1, the pane at the
-  picture's shape (`pane(video:)`) and its span (`trackpadSpan(video:)`); pure,
-  `Tests/checks/phone-portrait`), `DuoPosture`
-  (the iPhone Duo's posture and the rules that follow from it, docs/iphone-duo-plan.md:
-  `FoldInfo`, inferred before iOS 27.1 or the fold's band; the laptop pose's
-  split at the real fold and open flat's at the picture's shape, the book
-  pose's bar, one page for a card (on its targets' page), the connect column
-  and the room above the laptop pose's fold, the pairing overlay and the
-  window lights; the stream screen's status bar (hidden on the inner display
-  in every pose); the hinge from the fold before its first report; the
-  harness's stand-in and the displays' safe areas; pure, `Tests/checks/duo`;
-  pbxproj AB01/FB01), `DuoPostureReader` (iOS 27.1: `onHingeChange` at the
-  app's root into `\.duoEnvironment`, `DuoPosture.read`, the `.division`
-  region as a screen's own GeometryReader sees it; StreamScreen hands it to
-  its layouts as `\.duoFold` and hides the status bar with `duoStatusBar`;
-  AB02/FB02),
-  `InputOverlay` (direct touch, Pencil, keyboard, scroll momentum; each input
+  (owns the stream screen's state, viewport sends, full screen, tour, clipboard chip,
+  window thumbnails `WindowStrip`, `WindowLightsMenu`, and `AppDrawer` with Desktop as
+  its first row; `DuoLayout.phoneArrangement` for device wording), `PortraitStreamScreen`
+  (`StreamLayoutView` — one unified view driven by `StreamLayout` across portrait and
+  landscape, plus `HIDKey` and `KeyRow`), `PhonePortraitLayout` (`StreamLayout` — one pure
+  CoreGraphics + `FoldInfo` layout function for every orientation and device: software
+  keyboard is part of the layout so nothing interactive sits under it or on a fold band;
+  portrait top-to-bottom: aspect-fit picture, one bar `Apps | scrolling thumbnails |
+  Menus | Keyboard | Settings` hidden while keyboard is up, trackpad >= 75 pt, modifier
+  row with hide-keyboard cap when keyboard is up, then keyboard top; picture shrinks
+  before trackpad drops under 75 pt; laptop pose lifts picture + trackpad + modifier row
+  above the fold when the lower half cannot fit trackpad + keys; landscape: slim 56 pt
+  leading vertical rail `Apps, Menus, Keyboard, Settings` + full direct-touch picture
+  while keyboard is down, or picture ~55% left + trackpad ~45% right above modifier row
+  and keyboard while up, splitting cleanly around the book pose's vertical fold; Text Size
+  lives in `HostSettingsPanel` and Desktop in `AppDrawer`; pure, `Tests/checks/phone-portrait`),
+  `DuoPosture`
+  (the iPhone Duo's posture and fold rules, docs/iphone-duo-plan.md: `FoldInfo`, `crease`,
+  `roomAboveFold`, `paneAspect`, `offTheFold`, `lightsMenu`, `pageWidth`, `columnX`,
+  `leadingPage`, status bar visibility, harness stand-in, display safe areas, and
+  `KeyboardFrameMonitor` glass reading rules; pure, `Tests/checks/duo`; pbxproj AB01/FB01),
+  `DuoPostureReader` (iOS 27.1: `onHingeChange` at the app's root into `\.duoEnvironment`,
+  `DuoPosture.read`, the `.division` region; StreamScreen hands it to `StreamLayoutView`
+  as `\.duoFold` and hides the status bar with `duoStatusBar`; AB02/FB02),
+  `InputOverlay` (direct touch, Pencil, keyboard, space-bar floating cursor via
+  `UITextInput`'s `beginFloatingCursor`/`updateFloatingCursor`/`endFloatingCursor` routed
+  through `FloatingCursor` in `PointerPresence`, scroll momentum; each input
   says what drew this device's pointer; hardware keys through `ForwardedKeys`,
   the characters too while `KeyTyping` says the Mac types them, let go when the
   overlay stops taking keys; Esc's key commands; the iPad's

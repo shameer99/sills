@@ -157,59 +157,19 @@ extension DuoPosture {
         return max(0, crease.top)
     }
 
-    /// The portrait halves' split (the inner display upright, an iPad's window): how tall the
-    /// picture's pane is, from the top, and where the controls begin.
-    struct PortraitSplit: Equatable {
-        var picture: CGFloat
-        var controls: CGFloat
-    }
-
-    /// The picture pane's padding round the picture (PortraitStreamScreen's `picturePane.padding(8)`).
-    static let paneInset: CGFloat = 8
-    /// Open flat, the picture pane is never shorter than this, and leaves the trackpad at least that.
-    static let minimumPane: CGFloat = 160
-    static let minimumTrackpad: CGFloat = 200
-    /// 16:10, the shape of most Macs' displays and windows.
-    static let defaultAspect: CGFloat = 1.6
-
-    /// - Inferred (before iOS 27.1, an iPad): at the middle, as before.
-    /// - The laptop pose (approved (b1)): the picture above the fold, the controls below it, at the
-    ///   fold's real band (whole points, never into it).
-    /// - Open flat upright (approved (b2)): nothing pins the split. The pane takes the picture's
-    ///   shape across the screen's width (`aspect`, width over height), between `minimumPane` and
-    ///   what leaves the controls (`controls`, their rows but the trackpad) a `minimumTrackpad`; the
-    ///   trackpad grows into the rest.
-    static func portraitSplit(_ size: CGSize, _ fold: FoldInfo, aspect: CGFloat, controls: CGFloat) -> PortraitSplit {
-        switch fold {
-        case .inferred:
-            let half = (size.height / 2).rounded()
-            return PortraitSplit(picture: half, controls: half)
-        case .known:
-            if let band = fold.horizontalBand {
-                let top = max(0, band.minY.rounded(.down))
-                let bottom = min(size.height, band.maxY.rounded(.up))
-                return PortraitSplit(picture: top, controls: max(top, bottom))
-            }
-            let pictureWidth = max(0, size.width - 2 * paneInset)
-            let natural = (pictureWidth / max(aspect, 0.1)).rounded() + 2 * paneInset
-            let most = max(0, size.height - controls - minimumTrackpad)
-            let least = min(minimumPane, most)
-            let pane = min(max(natural, least), most)
-            return PortraitSplit(picture: pane, controls: pane)
-        }
-    }
-
     /// The pane's shape open flat: the picture's own (`video`, in pixels) while the Mac keeps the
     /// window's shape; 16:10 before there is a picture, and while the Mac fits the window to the pane
     /// (a window with Aa set, or on the virtual display), so the pane never follows a shape it gave
     /// the window itself (an app's least size would shrink the pane step by step).
+    static let defaultAspect: CGFloat = 1.6
+
     static func paneAspect(video: CGSize, fitsWindowToPane: Bool) -> CGFloat {
         guard !fitsWindowToPane, video.width > 0, video.height > 0 else { return defaultAspect }
         return video.width / video.height
     }
 }
 
-// MARK: - The inner display upright with the software keyboard up: the key row alone, or the toggle (#215)
+// MARK: - The software keyboard's glass in the laptop pose (KeyboardFrameMonitor)
 
 extension DuoPosture {
     /// The software keyboard's glass as Sill knows it, in the screen's space: where it begins, or nil while
@@ -278,8 +238,10 @@ extension DuoPosture {
     /// left; two keyboards of one height) leaves the keyboard's views where they were.
     static let keyboardSwitchReportWait: Double = 0.4
 
-    /// Whether the key row fits between the controls' top and a glass at `glassTop` (both on the same
-    /// screen): caps of `keyboardRowLeast` with `keyboardRowMargins` of black.
+    /// Whether a keyboard's glass leaves room under `controlsTop` for a 44 pt row with 8 pt of margins
+    /// (used by KeyboardFrameMonitor when deciding whether a stale look needs a reload check).
+    static let keyboardRowLeast: CGFloat = 44
+    static let keyboardRowMargins: CGFloat = 8
     static func keyboardRowFits(glassTop: CGFloat, controlsTop: CGFloat) -> Bool {
         glassTop - controlsTop >= keyboardRowLeast + keyboardRowMargins
     }
@@ -359,14 +321,7 @@ extension DuoPosture {
     }
 
     /// When KeyboardFrameMonitor reloads the input views to read the keyboard after a change, in seconds
-    /// after it (each change restarts them), in the world where only a reload tells (the keyboard's views
-    /// are the page: something reloaded the input views before): a reload made while the keyboard animates
-    /// is never answered (the iOS 27.1 simulator), so a coming keyboard is read as its animation ends (the
-    /// did-show), with reloads after the animation's length in case that report never comes; after a
-    /// switch every 40–70 ms from 50 ms on (the first reload that runs after UITextInputMode's notification,
-    /// 60–120 ms after it, already returns the keyboard brought), the early ones only until a reading differs
-    /// from the glass before the change and one more confirms it (`keyboardReadsAgain`); then two late ones,
-    /// always, so that a late or missing report does not matter.
+    /// after it (each change restarts them), in the world where only a reload tells.
     static func keyboardReadDelays(after change: KeyboardChange) -> [Double] {
         switch change {
         case .animating(let duration): return [duration + 0.02, duration + 0.1, 1.5, 2.5]
@@ -376,14 +331,13 @@ extension DuoPosture {
         }
     }
 
-    /// How long nothing stands in while the first reading after a change is on its way (`keyboardSettle`;
+    /// How long nothing settles while the first reading after a change is on its way (`keyboardSettle`;
     /// after a fold longer: the first readings there are stale, `keyboardReadingIsStale`).
     static func keyboardSettle(after change: KeyboardChange) -> Double { change == .fold ? 1.2 : keyboardSettle }
 
     /// After a fold (`staleUntil`, two seconds), UIKit's reload report goes on giving the keyboard as it was in
-    /// the other pose for about a second (open flat's English (0, 640, 669×311) and emoji (0, 553, 669×398) in
-    /// the laptop pose; the iOS 27.1 simulator, 2026-11-11): a reading within half a point of the frame UIKit
-    /// reported before the fold (`staleFrame`) is that, and no reading.
+    /// the other pose for about a second: a reading within half a point of the frame UIKit reported before the
+    /// fold (`staleFrame`) is that, and no reading.
     static func keyboardReadingIsStale(_ begin: CGRect, staleFrame: CGRect?, at: Double, staleUntil: Double) -> Bool {
         guard let staleFrame, at < staleUntil else { return false }
         return abs(begin.minY - staleFrame.minY) < 0.5 && abs(begin.height - staleFrame.height) < 0.5
@@ -394,24 +348,16 @@ extension DuoPosture {
     /// A report this soon after Sill reloaded its input views is that reload's (25–70 ms on the simulator),
     /// so its begin frame is the reading (`keyboardReportIsReading`).
     static let keyboardReadWindow: Double = 0.5
-    /// How long after the first of a run of changes nothing stands in while a reading is on its way, at
-    /// most: then the toggle, if there is still no reading.
+    /// How long after the first of a run of changes a reading settles.
     static let keyboardSettle: Double = 0.8
 
-    /// Whether a keyboard report at `at` is the reading of the reload Sill made at `reloadedAt` (nil: none
-    /// since the last change, UITextInputMode's notification among the changes): within
-    /// `keyboardReadWindow`, with a begin frame (`begin`) of some height, not animated (a reload's report has
-    /// no animation; a show's has, and a reload made while the keyboard comes is not answered), and never a
-    /// hide. Anything else is a change.
+    /// Whether a keyboard report at `at` is the reading of the reload Sill made at `reloadedAt`.
     static func keyboardReportIsReading(at: Double, reloadedAt: Double?, hiding: Bool, animated: Bool, begin: CGRect?) -> Bool {
         guard !hiding, !animated, let begin, begin.height > 0, !begin.isNull, let reloadedAt, at >= reloadedAt else { return false }
         return at - reloadedAt < keyboardReadWindow
     }
 
-    /// Whether an early reload is still needed after the readings since the last change (`readings`, one per
-    /// reload that was answered, oldest first): while none differs from the glass before the change (`before`,
-    /// within half a point; none before: any reading differs), and once more after the first that does, to
-    /// confirm it. A reading equal to the glass on screen changes nothing on screen.
+    /// Whether an early reload is still needed after the readings since the last change.
     static func keyboardReadsAgain(_ readings: [CGRect], before: CGRect?) -> Bool {
         func same(_ a: CGRect, _ b: CGRect?) -> Bool {
             guard let b else { return false }
@@ -420,145 +366,11 @@ extension DuoPosture {
         guard let first = readings.firstIndex(where: { !same($0, before) }) else { return true }
         return readings.count - first < 2
     }
-
-    /// The key row alone above the keyboard (Noah, 2026-10-27, "Let's start with A"): in the laptop pose its
-    /// caps as tall as the room under the fold allows less 8 (`keyboardRowMargins`), at most
-    /// `keyboardRowMost`, with as much black above as below; open flat `keyboardRowFlat` tall, 4 pt above the
-    /// glass (`keyboardRowGlassGap`).
-    static let keyboardRowMost: CGFloat = 58
-    static let keyboardRowMargins: CGFloat = 8
-    /// The least caps: Apple's least touch target (44 pt, the Human Interface Guidelines' "Buttons"). A room
-    /// under 52 in the laptop pose (44 and the 8 of black) gets no row but the toggle: the 445 pt keyboards
-    /// (emoji, Chinese Pinyin; their glass at 506, 10 pt under the fold).
-    static let keyboardRowLeast: CGFloat = 44
-    /// Open flat, the caps of the row under the English keyboard in the laptop pose (4 + 51 + 4), and the
-    /// black between them and the glass.
-    static let keyboardRowFlat: CGFloat = 51
-    static let keyboardRowGlassGap: CGFloat = 4
-    /// Between the row's caps (twelve ≈ 48 pt wide across 641; the halves' key row keeps its 8).
-    static let keyboardRowGap: CGFloat = 6
-    /// The toggle (Noah, 2026-11-10: "surface a small toggle on the top screen for the keyboard, and thats
-    /// it"): a 44 pt button, its bottom 8 pt above the picture pane's bottom edge, in its leading corner.
-    static let keyboardToggleSize: CGFloat = 44
-    static let keyboardToggleInset: CGFloat = 8
-
-    /// What stands in for the window bar and the key row while the person's software keyboard covers them.
-    struct KeyboardStandIn: Equatable {
-        /// The key row alone, its caps in the screen's space; nil where it would not be in view.
-        var row: CGRect?
-        /// The Keyboard toggle on the picture's corner (`keyboardToggle`), which puts the keyboard away.
-        var toggle: Bool
-    }
-
-    /// The inner display held upright while the person's software keyboard is up and its glass leaves the
-    /// window bar and the key row no room (`standardRows`, what they take from `controlsTop`):
-    /// - The laptop pose (the fold across, `controlsTop` its lower edge, 496): while the room under the fold
-    ///   to the glass holds caps of `keyboardRowLeast` with 8 of black, the key row there, its caps the room
-    ///   less 8, at most 58, the black above and below alike (whole points above, the odd point below):
-    ///   4 + 51 + 4 under the Duo's English keyboard (59 pt), 4 + 44 + 4 at 52, 8 + 58 + 8 at 74. Else the
-    ///   toggle: the emoji keyboard and Pinyin (445 pt, the glass at 506, 10 pt under the fold). Noah,
-    ///   2026-11-10: "If the keyboard is regular as we have done, we keep the compact view. If for some
-    ///   reason that would be covered up (i.e. emoji keyboard) surface a small toggle on the top screen".
-    /// - Open flat (no fold across; `controlsTop` the picture pane's foot): UIKit reports the keyboard as
-    ///   itself, so the key row stands `keyboardRowGlassGap` above its glass, `keyboardRowFlat` tall, never
-    ///   above `controlsTop`; with no room for 44 pt caps there, the toggle.
-    /// - The glass not known (`glass.top` nil): the toggle; while `settling` (a reading is on its way, at
-    ///   most a moment after a change: KeyboardFrameMonitor), nothing in their place yet, so that neither the
-    ///   toggle nor the row flashes before the reading puts the right one there.
-    /// Nil, the halves as they are, off the inner display upright (the book pose, the cover, before
-    /// iOS 27.1, an iPad), without a keyboard, and while the keyboard leaves the rows in view.
-    static func keyboardStandIn(size: CGSize, fold: FoldInfo, controlsTop: CGFloat, glass: KeyboardGlass?,
-                                standardRows: CGFloat, sides: CGFloat, settling: Bool = false) -> KeyboardStandIn? {
-        guard case .known(let band) = fold, band == nil || fold.horizontalBand != nil, size.height > size.width,
-              let glass else { return nil }
-        let width = max(0, size.width - 2 * sides)
-        guard let top = glass.top else { return KeyboardStandIn(row: nil, toggle: !settling) }
-        guard top < size.height else { return nil }
-        let room = top - controlsTop
-        guard room < standardRows else { return nil }
-        if fold.horizontalBand != nil {
-            guard room - keyboardRowMargins >= keyboardRowLeast else { return KeyboardStandIn(row: nil, toggle: true) }
-            let caps = min(keyboardRowMost, room - keyboardRowMargins)
-            let above = ((room - caps) / 2).rounded(.down)
-            return KeyboardStandIn(row: CGRect(x: sides, y: controlsTop + above, width: width, height: caps), toggle: false)
-        }
-        let caps = min(keyboardRowFlat, room - keyboardRowGlassGap)
-        guard caps >= keyboardRowLeast else { return KeyboardStandIn(row: nil, toggle: true) }
-        return KeyboardStandIn(row: CGRect(x: sides, y: top - keyboardRowGlassGap - caps, width: width, height: caps), toggle: false)
-    }
-
-    /// The toggle's place: inside the picture's pane (its drawn foot at `paneBottom`) at its bottom leading
-    /// corner, its leading edge on the key row's (`sides` from the screen's leading edge): the left corner, and
-    /// in a right-to-left layout the right one (PortraitStreamScreen places it from the leading edge). The
-    /// clipboard's "Paste on ‹Mac›" chip takes the pane's bottom trailing corner (ClipboardPolicy.chipCorner),
-    /// so the two never meet there (Noah, 2026-11-11: "Move the keyboard icon to the left corner instead").
-    static func keyboardToggle(paneBottom: CGFloat, sides: CGFloat) -> CGRect {
-        CGRect(x: sides, y: paneBottom - keyboardToggleInset - keyboardToggleSize,
-               width: keyboardToggleSize, height: keyboardToggleSize)
-    }
-
-    /// The clipboard chip's widest in the stream's pane (`panel`, in the stream screen's space), so that it never
-    /// covers the Keyboard toggle (Noah, 2026-11-11: the two must never overlap). The pane less 8 on each side,
-    /// as always; while the toggle shows in the pane's bottom band (`toggle`, in the same space; the chip's own
-    /// corner is the other bottom one), at most the room beside the toggle on the chip's side (the wider side,
-    /// whichever way the layout runs) less 8 at the pane's edge and 8 clear of the toggle. The chip's title
-    /// truncates in the middle on its one line, so a long Mac name only shortens.
-    static func clipboardChipMaxWidth(panel: CGRect, toggle: CGRect?) -> CGFloat {
-        let most = max(0, panel.width - 16)
-        guard let toggle, toggle.intersects(panel), toggle.maxY > panel.maxY - 120 else { return most }
-        let beside = max(panel.maxX - toggle.maxX, toggle.minX - panel.minX)
-        return min(most, max(0, beside - 16))
-    }
-
-    /// A cap's width when `count` caps share `width` with the row's gaps.
-    static func keyboardRowCap(count: Int, width: CGFloat) -> CGFloat {
-        guard count > 0 else { return 0 }
-        return (width - CGFloat(count - 1) * keyboardRowGap) / CGFloat(count)
-    }
 }
 
 // MARK: - The book pose: the fold down the middle of a screen held sideways
 
 extension DuoPosture {
-    /// The landscape bar in the book pose (approved (a)): Apps, the thumbnails, then the right group
-    /// of buttons against the trailing edge, and nothing on the fold's band.
-    struct BookBar: Equatable {
-        var buttonWidth: CGFloat
-        var gap: CGFloat
-        /// The strip's width, so that it ends a gap short of the band; nil when there is no band in
-        /// the bar (the strip as before).
-        var stripWidth: CGFloat?
-        /// The Settings panel's width: it hangs from the bar's trailing end, kept off the band.
-        var panelWidth: CGFloat
-        /// Whether the right group begins past the band (false only when no step makes it).
-        var clears: Bool
-    }
-
-    /// The least gap the right group steps down to.
-    static let minimumGap: CGFloat = 6
-
-    /// The bar `width` wide, its `padding` at each end, its buttons `buttonWidth` wide with `gap`
-    /// between everything, and a right group of `buttons` (Menus may come: count it). The group
-    /// keeps its size while it begins past the band; else it takes `compactButtonWidth` (the
-    /// approved step), then smaller gaps, down to `minimumGap`. The strip ends a gap short of the
-    /// band; the Settings panel is at most as wide as the room past the band.
-    static func bookBar(width: CGFloat, fold: FoldInfo, padding: CGFloat, gap: CGFloat, buttonWidth: CGFloat,
-                        compactButtonWidth: CGFloat, buttons: Int, panelWidth: CGFloat) -> BookBar {
-        let unchanged = BookBar(buttonWidth: buttonWidth, gap: gap, stripWidth: nil, panelWidth: panelWidth, clears: true)
-        guard let band = fold.verticalBand, buttons > 0, band.minX > padding, band.maxX < width - padding else { return unchanged }
-        let count = CGFloat(buttons)
-        func start(_ button: CGFloat, _ g: CGFloat) -> CGFloat { width - padding - count * button - (count - 1) * g }
-        var button = buttonWidth, g = gap
-        if start(button, g) < band.maxX { button = min(button, compactButtonWidth) }
-        if start(button, g) < band.maxX, buttons > 1 {
-            let room = ((width - padding - count * button - band.maxX) / (count - 1)).rounded(.down)
-            g = max(minimumGap, min(g, room))
-        }
-        let stripStart = padding + button + g          // after Apps
-        let strip = max(0, band.minX - g - stripStart)
-        let panel = min(panelWidth, max(0, width - padding - band.maxX))
-        return BookBar(buttonWidth: button, gap: g, stripWidth: strip, panelWidth: panel, clears: start(button, g) >= band.maxX)
-    }
 
     /// Something `width` wide at `x` on a screen `screenWidth` wide, kept off a vertical fold's band
     /// (a tour card): moved as little as it takes, against the fold, onto the page its middle is on

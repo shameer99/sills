@@ -353,3 +353,49 @@ struct PadCursor: Equatable {
         CGPoint(x: min(max(p.x, 0), 1), y: min(max(p.y, 0), 1))
     }
 }
+
+/// Space-bar trackpad (UITextInput floating cursor on InputOverlayView): turns the system keyboard's
+/// floating-cursor points into relative Mac pointer moves through `PadCursor`, carrying on from the
+/// pointer feed's anchor and re-seeds without ever moving the text caret.
+struct FloatingCursor: Equatable {
+    /// Same travel multiplier as `TrackpadSurface.travel`, so sliding across the space-bar trackpad
+    /// matches the on-screen trackpad's feel.
+    static let travel: CGFloat = 1.25
+    /// Minimum reference span in points so a shrunk picture pane never causes wild sensitivity spikes.
+    static let minSpan: CGFloat = 120
+
+    private(set) var last: CGPoint? = nil
+    private(set) var pad = PadCursor()
+
+    var active: Bool { last != nil }
+    var cursor: CGPoint { pad.cursor }
+
+    /// Floating cursor began at `point` (in the input view's coordinates): anchor the virtual cursor to
+    /// the feed without moving it yet.
+    mutating func begin(at point: CGPoint, anchor: CGPoint?, reseeds: Int) {
+        guard point.x.isFinite, point.y.isFinite else { return }
+        last = point
+        pad.adopt(anchor: anchor, reseeds: reseeds)
+    }
+
+    /// Floating cursor moved to `point` inside a view of `size`: returns the new clamped frame position
+    /// (0…1), or nil when inactive, zero delta, or invalid geometry.
+    mutating func update(to point: CGPoint, in size: CGSize, anchor: CGPoint?, reseeds: Int) -> CGPoint? {
+        guard let prev = last, point.x.isFinite, point.y.isFinite,
+              size.width > 0, size.height > 0 else { return nil }
+        let dx = point.x - prev.x
+        let dy = point.y - prev.y
+        last = point
+        guard dx != 0 || dy != 0 else { return nil }
+        let spanW = max(size.width, Self.minSpan)
+        let spanH = max(size.height, Self.minSpan)
+        pad.catchUp(anchor: anchor, reseeds: reseeds)
+        pad.move(dx: Double(dx / spanW * Self.travel), dy: Double(dy / spanH * Self.travel))
+        return pad.cursor
+    }
+
+    /// Floating cursor ended (finger lifted off the keyboard or view resigned).
+    mutating func end() {
+        last = nil
+    }
+}

@@ -203,58 +203,45 @@ enum EdgeReveal {
 
 /// The swipe in's preview (StreamScreen's `revealPreview`) is the shown interface coming in with the finger over
 /// the hidden picture. Until the controls land it draws them with the background they sit on and nothing of the
-/// picture's place: no pane, rim, margin or room's black over the hidden picture (Noah,
-/// 2026-11-12, on the try builds: "a bezel for the virtual display that shows above the controls as you swipe
-/// in", "the bottom of it has a small black bar below it", "Ideally, no bezel gets rendered above or below the
-/// controls until they are fully summoned", and on an iPhone upright "just a touch of black above the UI buttons
-/// on iPhone in portrait to make it look uniform"). Each layout gives its place from its own geometry, never from
-/// the picture: a pane at the video's shape is narrower or shorter than its room (an iPhone upright with Larger
-/// Picture and a tall window showed the room's black beside it, 2026-11-12). The layouts draw nothing in the place
-/// and their black only at `shown`, by construction: no mask over a drawn pane, which a measurement a frame late
-/// let flash (Noah, on an iPhone on its side: "something quickly renders below the UI … very jarring").
-/// - Landscape: everything under the top bar, which carries its own background (`Palette.bar`), so the cut ends
-///   at its bottom edge, and the pane, its margin and the black round it all go.
-/// - The halves (an iPad upright, the Duo's inner display upright, the laptop pose): everything over the
-///   controls' block (`DuoPosture.PortraitSplit.controls`): the picture's half with the pane's margin, and the
-///   laptop pose's fold. The block's own top margin, the black above the window bar, stays, as once they land.
-/// - A phone upright and the Duo's cover upright (`PhonePortraitLayout`): everything over the bottom of the
-///   picture's room (`picture`, Larger Picture's room too, whatever the video). The gap above row 1 stays black,
-///   24 pt to the buttons, the shown layout's own.
+/// picture's place: no pane, rim, margin or room's black over the hidden picture.
+/// - Landscape: everything to the right of the leading vertical rail (`StreamLayout.rail`), which carries its
+///   own background (`Palette.bar`).
+/// - Portrait: everything over the bottom of the picture's room (`StreamLayout.pictureRoom`, or above the fold
+///   in the laptop pose). The controls below keep their black background, as once they land.
 enum RevealCut {
-    /// Where the picture's place is in a layout: everything under a line (a bar's bottom edge), or over one
-    /// (where the black the controls sit on begins).
+    /// Where the picture's place is in a layout: everything to the right of a leading rail, or over a line
+    /// (where the black the portrait controls sit on begins).
     enum Place: Equatable {
-        case under(CGFloat)
+        case rightOf(CGFloat)
         case over(CGFloat)
     }
 
-    /// Landscape: under the top bar, `barHeight` tall (StreamScreen's `BarMetrics.height`, the fold cleared).
-    static func landscape(barHeight: CGFloat) -> Place { .under(barHeight) }
-    /// The halves: over the controls' block.
-    static func halves(_ split: DuoPosture.PortraitSplit) -> Place { .over(split.controls) }
-    /// A phone upright: over the bottom of the picture's room.
-    static func phone(_ layout: PhonePortraitLayout) -> Place { .over(layout.picture.maxY) }
+    /// The picture's place for a shown `StreamLayout`.
+    static func place(for layout: StreamLayout) -> Place {
+        if let rail = layout.rail { return .rightOf(rail.maxX) }
+        if let bar = layout.bar { return .over(bar.minY - StreamLayout.rowGap) }
+        return .over(layout.pictureRoom.maxY)
+    }
 
-    /// The cut in a preview of `size`: the place across the whole width, from its line to the far edge.
+    /// The cut in a preview of `size`: the picture's place, from its line to the far edge.
     static func cut(_ place: Place, in size: CGSize) -> CGRect {
         guard size.width > 0, size.height > 0 else { return .zero }
         switch place {
-        case .under(let line):
-            let top = min(max(line, 0), size.height)
-            return CGRect(x: 0, y: top, width: size.width, height: size.height - top)
+        case .rightOf(let line):
+            let left = min(max(line, 0), size.width)
+            return CGRect(x: left, y: 0, width: size.width - left, height: size.height)
         case .over(let line):
             let bottom = min(max(line, 0), size.height)
             return CGRect(x: 0, y: 0, width: size.width, height: bottom)
         }
     }
 
-    /// What the preview draws: the rest of it, the controls with the background they sit on (the upright layouts
-    /// draw their black exactly here; landscape's bar carries its own).
+    /// What the preview draws: the rest of it, the controls with the background they sit on.
     static func shown(_ place: Place, in size: CGSize) -> CGRect {
         guard size.width > 0, size.height > 0 else { return .zero }
         let cut = cut(place, in: size)
         switch place {
-        case .under: return CGRect(x: 0, y: 0, width: size.width, height: cut.minY)
+        case .rightOf: return CGRect(x: 0, y: 0, width: cut.minX, height: size.height)
         case .over: return CGRect(x: 0, y: cut.maxY, width: size.width, height: size.height - cut.maxY)
         }
     }
